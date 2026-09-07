@@ -48,14 +48,15 @@ LATEST_MAX_AGE = 3.0
 
 
 def _shot_name_ok(name: str) -> bool:
-    """Allow only our own snapshot file names (no traversal)."""
+    """Allow only our own snapshot/clip file names (no traversal)."""
     import re
 
-    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.jpg", name or "") is not None
+    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(jpg|mp4)",
+                        name or "") is not None
 
 
 def _list_shots(day: str | None = None) -> list:
-    """Saved shots newest-first: [{name, day, time}]. Day filter YYYYMMDD."""
+    """Saved shots+clips newest-first: [{name, day, time, kind}]."""
     import re
 
     out = []
@@ -64,14 +65,16 @@ def _list_shots(day: str | None = None) -> list:
     except OSError:
         return out
     for name in sorted(names, reverse=True):
-        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+)?\.jpg", name)
+        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+)?\.(jpg|mp4)",
+                          name)
         if not m:
             continue
         if day and m.group(1) != day:
             continue
         t = m.group(2)
         out.append({"name": name, "day": m.group(1),
-                    "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}"})
+                    "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}",
+                    "kind": "video" if m.group(4) == "mp4" else "shot"})
     return out
 
 
@@ -107,6 +110,112 @@ def _periodic_worker(interval: float):
                 _save_snapshot(img)
             except OSError:
                 pass
+
+
+def _record_clip(seconds: float):
+    """Capture `seconds` of live JPEGs and mux to timestamped .mp4.
+
+    Returns the file name, or None when no frames arrived. Needs
+    numpy+opencv (requirements-min); raises RuntimeError without them.
+    Caller must hold _cam_lock.
+    """
+    import datetime as _dt
+    import time as _time
+
+    try:
+        import numpy as _np
+        import cv2 as _cv2
+    except ImportError as exc:
+        raise RuntimeError("clip needs numpy+opencv (see requirements-min)") \
+            from exc
+
+    sock = _open_cam(*CAMERA)
+    frames = []
+    t0 = _time.monotonic()
+    try:
+        _open_video(sock)
+        deadline = t0 + seconds + 10.0
+        end = t0 + seconds
+        for img in _iter_jpegs(sock, lambda: _time.monotonic() >= end):
+            frames.append(img)
+            if _time.monotonic() >= deadline:
+                break
+    finally:
+        _close_cam(sock)
+    if not frames:
+        return None
+    dec = [_cv2.imdecode(_np.frombuffer(f, dtype=_np.uint8),
+                         _cv2.IMREAD_COLOR) for f in frames]
+    dec = [d for d in dec if d is not None]
+    if not dec:
+        return None
+    h, w = dec[0].shape[:2]
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    name = f"{UID}-{stamp}.mp4"
+    path = os.path.join(SNAP_DIR, name)
+    n = 1
+    while os.path.exists(path):
+        n += 1
+        name = f"{UID}-{stamp}-{n}.mp4"
+        path = os.path.join(SNAP_DIR, name)
+    tmp = os.path.join(SNAP_DIR, ".part-" + name)  # keep .mp4 suffix
+    elapsed = _time.monotonic() - t0
+    fps = min(max(len(dec) / max(elapsed, 0.1), 1.0), 15.0)
+    if not _mux_ffmpeg(dec, tmp, w, h, fps):
+        _mux_cv2(dec, tmp, w, h)
+    os.rename(tmp, path)
+    return name
+
+
+def _mux_ffmpeg(dec, tmp, w, h, fps) -> bool:
+    """H.264 mp4 via ffmpeg pipe (plays inline in browsers)."""
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg") is None:
+        return False
+    try:
+        proc = subprocess.Popen(
+            ["ffmpeg", "-y", "-v", "error",
+             "-f", "rawvideo", "-pix_fmt", "bgr24",
+             "-s", f"{w}x{h}", "-r", f"{fps:.2f}", "-i", "-",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", tmp],
+            stdin=subprocess.PIPE)
+    except OSError:
+        return False
+    try:
+        for d in dec:
+            if d.shape[:2] == (h, w):
+                proc.stdin.write(d.tobytes())
+        proc.stdin.close()
+        return proc.wait(timeout=30) == 0 and os.path.exists(tmp)
+    except (OSError, ValueError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return False
+
+
+def _mux_cv2(dec, tmp, w, h) -> None:
+    """Fallback: mp4v via opencv (downloads fine, browsers may not play)."""
+    import cv2 as _cv2
+
+    vw = None
+    for tag in ("mp4v", "XVID"):
+        vw = _cv2.VideoWriter(tmp, _cv2.VideoWriter_fourcc(*tag), 10, (w, h))
+        if vw.isOpened():
+            break
+        vw.release()
+        vw = None
+    if vw is None:
+        raise RuntimeError(f"VideoWriter open failed ({w}x{h}, mp4v/XVID)")
+    for d in dec:
+        if d.shape[:2] == (h, w):
+            vw.write(d)
+    vw.release()
 
 
 def _save_snapshot(img: bytes) -> str:
@@ -395,7 +504,9 @@ class Handler(BaseHTTPRequestHandler):
                            [("Connection", "close")])
                 self.wfile.write(b"not found")
                 return
-            self._send(200, "image/jpeg", len(img),
+            ctype = ("video/mp4" if name.endswith(".mp4")
+                     else "image/jpeg")
+            self._send(200, ctype, len(img),
                        [("Connection", "close")])
             self.wfile.write(img)
         else:
@@ -426,6 +537,60 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"not found")
             return
         body = json.dumps({"deleted": name}).encode()
+        self._send(200, "application/json", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
+
+    def do_POST(self):  # noqa: N802
+        from urllib.parse import urlparse, parse_qs
+
+        parts = urlparse(self.path)
+        route = parts.path
+        if route != f"/dev/{UID}/clip":
+            self._send(404, "text/plain", 9,
+                       [("Connection", "close")])
+            self.wfile.write(b"not found")
+            return
+        try:
+            seconds = float(parse_qs(parts.query).get("seconds", ["10"])[0])
+        except ValueError:
+            seconds = 10.0
+        seconds = min(max(seconds, 3.0), 60.0)
+        import time as _time
+
+        acquired = False
+        for _ in range(20):
+            # The page pauses its own live feed first; give the previous
+            # session a moment to notice the closed socket and release.
+            if _cam_lock.acquire(blocking=False):
+                acquired = True
+                break
+            _time.sleep(0.5)
+        if not acquired:
+            self._send(503, "text/plain", 11,
+                       [("Connection", "close")])
+            self.wfile.write(b"camera busy")
+            return
+        try:
+            name = _record_clip(seconds)
+        except RuntimeError as exc:
+            self._send(501, "text/plain", len(str(exc)),
+                       [("Connection", "close")])
+            self.wfile.write(str(exc).encode())
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._send(502, "text/plain", len(str(exc)),
+                       [("Connection", "close")])
+            self.wfile.write(str(exc).encode())
+            return
+        finally:
+            _cam_lock.release()
+        if name is None:
+            self._send(502, "text/plain", 17,
+                       [("Connection", "close")])
+            self.wfile.write(b"no frames in time")
+            return
+        body = json.dumps({"clip": name, "seconds": seconds}).encode()
         self._send(200, "application/json", len(body),
                    [("Connection", "close")])
         self.wfile.write(body)

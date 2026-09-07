@@ -28,6 +28,7 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
 .shot { border-radius: 12px; overflow: hidden; background: #0a0c11; border: 1px solid var(--line); }
 .shot img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: #000; }
+.shot video { width: 100%; aspect-ratio: 4/3; display: block; background: #000; }
 .shot.sel { outline: 2px solid var(--acc); }
 .shot .tm { padding: .4rem .6rem; font-size: .8rem; color: var(--mut); }
 .foot { display: flex; gap: .5rem; margin: 1rem 0 2rem; }
@@ -44,10 +45,11 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
 <noscript><p class="error">JavaScript is disabled or blocked for this site.</p></noscript>
 <p class="nota" id="build">build fresh-3</p>
 <div id="live-wrap"><img class="live" id="live" alt="Live feed"></div>
-<div class="bar">
-<button type="button" class="pri" id="save">Save snapshot</button>
-<button type="button" id="reload-live">Reload live</button>
-</div>
+  <div class="bar">
+    <button type="button" class="pri" id="save">Save snapshot</button>
+    <button type="button" id="record">Record 10s clip</button>
+    <button type="button" id="reload-live">Reload live</button>
+  </div>
 <p class="msg" id="msg" hidden></p>
 <p class="error" id="error" hidden></p>
 <div class="chips" id="chips"><button data-day="" class="on">Today</button></div>
@@ -134,17 +136,25 @@ function loadShots(day) {
         groupsEl.appendChild(h);
         var g = document.createElement('div');
         g.className = 'grid';
-        byDay[day].forEach(function (s) {
-          var d = document.createElement('div');
-          d.className = 'shot';
-          var im = document.createElement('img');
-          im.loading = 'lazy';
-          im.alt = s.name;
-          im.src = 'dev/shots/' + encodeURIComponent(s.name);
+          byDay[day].forEach(function (s) {
+            var d = document.createElement('div');
+            d.className = 'shot';
+            if (s.kind === 'video') {
+              var v = document.createElement('video');
+              v.controls = true;
+              v.preload = 'metadata';
+              v.src = 'dev/shots/' + encodeURIComponent(s.name);
+              d.appendChild(v);
+            } else {
+              var im = document.createElement('img');
+              im.loading = 'lazy';
+              im.alt = s.name;
+              im.src = 'dev/shots/' + encodeURIComponent(s.name);
+              d.appendChild(im);
+            }
           var tm = document.createElement('div');
           tm.className = 'tm';
-          tm.textContent = s.time;
-          d.appendChild(im);
+          tm.textContent = s.time + (s.kind === 'video' ? ' ▶' : '');
           d.appendChild(tm);
           d.onclick = (function (name, el) {
             return function () {
@@ -174,6 +184,28 @@ document.getElementById('save').onclick = function () {
     function (e) { fail('Save failed: ' + String((e && e.message) || e)); });
 };
 document.getElementById('reload-live').onclick = watchLive;
+document.getElementById('record').onclick = function () {
+  say('Recording 10s clip (live pauses)…');
+  var liveSrc = liveEl.getAttribute('src');
+  liveEl.removeAttribute('src');
+  function resume() {
+    liveEl.setAttribute('src', liveSrc);
+  }
+  fetch('dev/' + UID + '/clip?seconds=10', { method: 'POST', cache: 'no-store' })
+    .then(function (r) {
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.json();
+    })
+    .then(function (j) {
+      say('Saved clip ' + j.clip);
+      loadShots(todayStr);
+      resume();
+    })
+    .catch(function (e) {
+      fail('Record failed: ' + String((e && e.message) || e));
+      resume();
+    });
+};
 document.getElementById('del').onclick = function () {
   var names = Object.keys(selected);
   if (!names.length) { say('Nothing selected.'); return; }
