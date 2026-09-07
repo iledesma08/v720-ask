@@ -32,11 +32,11 @@ curl -s http://127.0.0.1:8090/dev/list   # → [{"uid":"ap-camera",...}]
 
 ## 4. NPM + AdGuard front end (same recipe validated in `docs/npm-cam-route.md`)
 
-1. Static: `python3 -m http.server 8000 --directory static`
-2. AdGuard > DNS rewrites: `camara.lan` → `192.168.0.204`
+1. AdGuard > DNS rewrites: `camara.lan` → `192.168.0.204`
    (the PC must use AdGuard as DNS; otherwise a hosts entry)
-3. NPM Proxy Host `camara.lan` → `192.168.0.204:8000` with Access List
-   (auth) + *Custom location* `/dev` → `192.168.0.204:8090`
+2. NPM Proxy Host `camara.lan` → `192.168.0.204:8090` with Access List
+   (auth). No custom locations: `/` (page) and `/dev/*` (API) both
+   come from the gateway.
 
 The page uses **relative** URLs (`dev/list`, `dev/<uid>/live`,
 `dev/<uid>/snapshot`): it works as long as `/` and `/dev/*` share the

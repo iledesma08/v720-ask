@@ -34,6 +34,7 @@ from log import log  # noqa: E402
 CAMERA = ("192.168.169.1", 6123)
 UID = "ap-camera"
 BOUNDARY = "jpgboundary"
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
 _cam_lock = threading.Lock()
 
 
@@ -251,7 +252,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/dev/list":
+        if self.path in ("/", "/index.html"):
+            self._static()
+        elif self.path == "/dev/list":
             body = json.dumps(
                 [{"uid": UID, "host": CAMERA[0], "port": CAMERA[1]}]
             ).encode()
@@ -266,6 +269,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain", 9,
                        [("Connection", "close")])
             self.wfile.write(b"not found")
+
+    def _static(self):
+        """Serve the bundled index page (exact file only, no listing)."""
+        try:
+            with open(os.path.join(STATIC_DIR, "index.html"), "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self._send(404, "text/plain", 9,
+                       [("Connection", "close")])
+            self.wfile.write(b"not found")
+            return
+        self._send(200, "text/html; charset=utf-8", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
 
     def _sleep_or_gone(self, delay):
         """Sleep delay seconds, aborting early if the viewer went away."""

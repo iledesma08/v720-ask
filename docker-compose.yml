@@ -1,0 +1,16 @@
+# Reference compose (merge into your infra file). Single service: the
+# gateway now serves the page (/) and the API (/dev/*) on :8090, so the
+# standalone :8000 static server and the NPM custom location are obsolete.
+# Uses host networking like the other Pi services so 192.168.169.1 is
+# reachable over the host's wlan0.
+services:
+  cam-gateway:
+    build: .
+    image: v720-cam-gateway:latest
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://localhost:8090/dev/list')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3

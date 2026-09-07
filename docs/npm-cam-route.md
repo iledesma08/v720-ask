@@ -23,22 +23,19 @@ python3 -m http.server 8000 --directory static
 
 ## 2. Proxy Host recipe (NPM UI, port 81)
 
-Hosts > Proxy Hosts > Add Proxy Host:
+Hosts > Proxy Hosts > Add Proxy Host (edit the existing `camara.lan` host):
 
 - Details tab:
   - Domain Names: `camara.lan`
   - Scheme: `http`
   - Forward Hostname / IP: `192.168.0.204`
-  - Forward Port: `8000` (the static page; NOT 8090)
+  - Forward Port: `8090` (page + API now come from the gateway alone)
   - Cache Assets: off
   - Block Common Exploits: on
   - Websockets Support: off (not needed — MJPEG over plain HTTP)
 
-- Custom Locations tab > Add Location:
-  - Location: `/dev`
-  - Scheme: `http`
-  - Forward Hostname / IP: `192.168.0.204`
-  - Forward Port: `8090` (the gateway)
+- Custom Locations tab: **remove** the old `/dev` location (obsolete —
+  `/` and `/dev/*` both come from :8090 now).
 
 - SSL tab: as per your LAN policy (page works over plain http).
 
