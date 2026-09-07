@@ -10,6 +10,11 @@ article.cam { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin:
 img.live { width: 100%; max-width: 640px; display: block; background: #000; }
 .nota { background: #fff8e1; border: 1px solid #e0c36a; border-radius: 8px; padding: .75rem 1rem; }
 .error { color: #a00; }
+.status { font-size: .8rem; font-weight: normal; margin-left: .5rem; }
+.status.on { color: #0a0; }
+.status.off { color: #a00; }
+.msg { font-size: .9rem; color: #060; }
+button { margin-right: 1rem; }
 nav a { margin-right: 1rem; }
 </style>
 </head>
@@ -54,6 +59,10 @@ the gateway responds <code>503 camera busy</code>. Wait until it is released and
 
         var h = document.createElement('h2');
         h.textContent = uid;
+        var st = document.createElement('span');
+        st.className = 'status on';
+        st.textContent = '● online';
+        h.appendChild(st);
         art.appendChild(h);
 
         // Live MJPEG (same connection the browser reloads with F5).
@@ -62,7 +71,13 @@ the gateway responds <code>503 camera busy</code>. Wait until it is released and
         img.className = 'live';
         img.alt = 'Live feed of ' + uid;
         img.src = 'dev/' + encodeURIComponent(uid) + '/live';
+        img.addEventListener('load', function () {
+          st.textContent = '● online';
+          st.className = 'status on';
+        });
         img.addEventListener('error', function () {
+          st.textContent = '● unreachable / busy';
+          st.className = 'status off';
           mostrarError('Could not load the live feed of ' + uid +
             ' (503 camera busy with another viewer? Wait and reload).');
         });
@@ -78,7 +93,35 @@ the gateway responds <code>503 camera busy</code>. Wait until it is released and
         aSnap.href = 'dev/' + encodeURIComponent(uid) + '/snapshot';
         aSnap.textContent = 'Snapshot (JPEG)';
         nav.appendChild(aSnap);
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Save snapshot';
+        var msg = document.createElement('p');
+        msg.className = 'msg';
+        msg.hidden = true;
+        btn.addEventListener('click', function () {
+          msg.hidden = true;
+          // The server snapshots from the live stream cache, so the
+          // feed keeps playing while saving.
+          fetch('dev/' + encodeURIComponent(uid) + '/snapshot?save=1',
+            { cache: 'no-store' })
+            .then(function (r) {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return r.json();
+            })
+            .then(function (j) {
+              msg.textContent = 'Saved ' + j.saved;
+              msg.hidden = false;
+            })
+            .catch(function (e) {
+              mostrarError('Save failed: ' +
+                String(e && e.message || e));
+            });
+        });
+        nav.appendChild(btn);
         art.appendChild(nav);
+        art.appendChild(msg);
 
         lista.appendChild(art);
       });

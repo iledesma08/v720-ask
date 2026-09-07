@@ -35,7 +35,34 @@ CAMERA = ("192.168.169.1", 6123)
 UID = "ap-camera"
 BOUNDARY = "jpgboundary"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
+SNAP_DIR = os.environ.get(
+    "SNAP_DIR", os.path.join(os.path.dirname(__file__), "..", "snapshots"))
 _cam_lock = threading.Lock()
+
+# Latest completed JPEG per gateway, published by the live reader thread.
+# Lets /snapshot serve from cache while a viewer holds the camera lock.
+_latest_lock = threading.Lock()
+_latest_img: bytes | None = None
+_latest_ts = 0.0
+LATEST_MAX_AGE = 3.0
+
+
+def _save_snapshot(img: bytes) -> str:
+    """Store img timestamped under SNAP_DIR, return the file name."""
+    import datetime as _dt
+
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    name = f"{UID}-{stamp}.jpg"
+    path = os.path.join(SNAP_DIR, name)
+    n = 1
+    while os.path.exists(path):
+        n += 1
+        name = f"{UID}-{stamp}-{n}.jpg"
+        path = os.path.join(SNAP_DIR, name)
+    with open(path, "wb") as fh:
+        fh.write(img)
+    return name
 
 
 def _resync_request(sock, data, match, tries=30):
@@ -172,6 +199,7 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
     stop_flag = threading.Event()
 
     def reader():
+        global _latest_img, _latest_ts
         nonlocal buf, sync
         pending = []
         last_confirm = _time.monotonic()
@@ -214,10 +242,14 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
                 f = data.find(b"\xff\xd9")
                 if f != -1:
                     buf.extend(data[: f + 2])
+                    frame = bytes(buf)
                     try:
-                        out.put_nowait(bytes(buf))
+                        out.put_nowait(frame)
                     except queue.Full:
                         pass
+                    with _latest_lock:
+                        _latest_img = frame
+                        _latest_ts = _time.monotonic()
                     buf.clear()
                     sync = False
                 else:
@@ -252,18 +284,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):  # noqa: N802
-        if self.path in ("/", "/index.html"):
+        from urllib.parse import urlparse
+
+        route = urlparse(self.path).path
+        if route in ("/", "/index.html"):
             self._static()
-        elif self.path == "/dev/list":
+        elif route == "/dev/list":
             body = json.dumps(
                 [{"uid": UID, "host": CAMERA[0], "port": CAMERA[1]}]
             ).encode()
             self._send(200, "application/json", len(body),
                        [("Connection", "close")])
             self.wfile.write(body)
-        elif self.path == f"/dev/{UID}/snapshot":
+        elif route == f"/dev/{UID}/snapshot":
             self._snapshot()
-        elif self.path == f"/dev/{UID}/live":
+        elif route == f"/dev/{UID}/live":
             self._live()
         else:
             self._send(404, "text/plain", 9,
@@ -299,7 +334,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _snapshot(self):
         import time as _time
+        from urllib.parse import urlparse, parse_qs
 
+        save = parse_qs(urlparse(self.path).query).get("save", ["0"])[0] == "1"
+        with _latest_lock:
+            img = (_latest_img
+                   if _latest_img is not None
+                   and _time.monotonic() - _latest_ts < LATEST_MAX_AGE
+                   else None)
+        if img is not None:
+            return self._serve_snapshot(img, save)
         if not _cam_lock.acquire(blocking=False):
             self._send(503, "text/plain", 11,
                        [("Connection", "close")])
@@ -335,15 +379,25 @@ class Handler(BaseHTTPRequestHandler):
                            [("Connection", "close")])
                 self.wfile.write(b"no frame in time")
                 return
-            self._send(200, "image/jpeg", len(img),
-                       [("Connection", "close")])
-            self.wfile.write(img)
+            return self._serve_snapshot(img, save)
         except Exception as exc:  # noqa: BLE001
             self._send(502, "text/plain", len(str(exc)),
                        [("Connection", "close")])
             self.wfile.write(str(exc).encode())
         finally:
             _cam_lock.release()
+
+    def _serve_snapshot(self, img: bytes, save: bool):
+        if save:
+            name = _save_snapshot(img)
+            body = json.dumps({"saved": name}).encode()
+            self._send(200, "application/json", len(body),
+                       [("Connection", "close")])
+            self.wfile.write(body)
+            return
+        self._send(200, "image/jpeg", len(img),
+                   [("Connection", "close")])
+        self.wfile.write(img)
 
     def _live(self):
         if not _cam_lock.acquire(blocking=False):
