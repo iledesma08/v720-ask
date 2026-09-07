@@ -1,6 +1,5 @@
 from __future__ import annotations
-import xmltodict
-import xml
+import xml.etree.ElementTree as ET
 
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
@@ -9,6 +8,24 @@ from json import dumps
 import cmd_udp
 from prot_udp import prot_udp
 from prot_udp import tests as prot_udp_tests
+
+
+def _elem_to_dict(el: ET.Element) -> dict:
+    """xmltodict-compatible shape: `@attr` keys, repeated tags as lists,
+    single child tag as plain dict (matches v720_ap.filename_list)."""
+    d = {f'@{k}': v for k, v in el.attrib.items()}
+    children = list(el)
+    if children:
+        by_tag: dict[str, list] = {}
+        for ch in children:
+            by_tag.setdefault(ch.tag, []).append(_elem_to_dict(ch))
+        for tag, lst in by_tag.items():
+            d[tag] = lst[0] if len(lst) == 1 else lst
+    else:
+        text = (el.text or '').strip()
+        if text:
+            d['#text'] = text
+    return d
 
 @dataclass
 class prot_xml_udp(prot_udp):
@@ -23,9 +40,10 @@ class prot_xml_udp(prot_udp):
         r = prot_udp.resp(income)
         if r is not None and r.cmd == cmd_udp.P2P_UDP_CMD_XML:
             try:
+                root = ET.fromstring(r.payload.decode('ascii'))
                 return prot_xml_udp(**asdict(r),
-                                    xml=xmltodict.parse(r.payload.decode('ascii')))
-            except (UnicodeDecodeError, xml.parsers.expat.ExpatError):
+                                    xml={root.tag: _elem_to_dict(root)})
+            except (UnicodeDecodeError, ET.ParseError):
                 print(f'---Exception with: {r.payload}')
         return None
 

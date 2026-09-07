@@ -1,4 +1,3 @@
-# Minimal headless check (py3.11, driver only, no cv2/numpy/Pillow).
-# Full legacy stack stays in requirements.txt.
-xmltodict==1.0.4
+# Minimal headless check + gateway (pure stdlib, no cv2/numpy/Pillow).
+# Installs clean on Python 3.11+. Full legacy stack in requirements.txt.
 tqdm==4.66.5

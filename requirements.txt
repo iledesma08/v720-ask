@@ -1,6 +1,6 @@
-netifaces==0.11.0
-numpy==1.24.4
-opencv-python==4.8.0.76
-Pillow==9.5.0
-tqdm==4.64.0
-xmltodict==0.12.0
+# Full stack (legacy viewer needs cv2/numpy/Pillow; gateway + check don't).
+# Installs clean on Python 3.13. netifaces/xmltodict dropped (stdlib instead).
+numpy>=1.26
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+tqdm>=4.64.0

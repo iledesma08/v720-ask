@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 
-import cv2
-import numpy
 import io
 import cmd_udp
 import time
 from datetime import datetime
 from threading import Timer, Lock
-from PIL import Image
 
 from netcl_tcp import netcl_tcp
 from v720_ap import v720_ap
@@ -22,6 +19,9 @@ writer_lock = Lock()
 
 def cv2_show_img(frame: bytearray):
     global frame_time, last_img, writer_lock
+    import cv2  # lazy: viewer-only heavy deps (see requirements.txt)
+    import numpy
+    from PIL import Image
     t = time.time()
     fps = round(1 / (t - frame_time), 2)
     
@@ -38,6 +38,7 @@ def cv2_show_img(frame: bytearray):
 
 
 def show_live(cam: v720_ap, videofile: str = None, audiofile: str = None):
+    import cv2  # lazy: viewer-only heavy deps (see requirements.txt)
     cv2.startWindowThread()
     cv2.namedWindow('Frame')
 

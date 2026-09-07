@@ -7,16 +7,29 @@ import json
 
 from queue import Queue, Empty
 import socket
+import struct
 from log import log
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-import netifaces
 from netcl_udp import netcl_udp
 from a9_live import PORT, WAV_HDR
 
 TCP_PORT = PORT
 HTTP_PORT = 80
+
+
+def _default_gw() -> str | None:
+    """Default IPv4 gateway without netifaces (Linux /proc)."""
+    try:
+        with open('/proc/net/route') as fh:
+            for line in fh.read().splitlines()[1:]:
+                f = line.split()
+                if len(f) > 2 and f[1] == '00000000':
+                    return socket.inet_ntoa(struct.pack('<L', int(f[2], 16)))
+    except OSError:
+        pass
+    return None
 
 
 class v720_http(log, SimpleHTTPRequestHandler):
@@ -245,7 +258,7 @@ class v720_http(log, SimpleHTTPRequestHandler):
                 if param.startswith('devicesCode'):
                     uid = param.split('=')[1]
 
-            gws = netifaces.gateways()
+            gw = _default_gw()
             ret = {
                 "code": 200,
                 "message": "OK",
@@ -255,7 +268,7 @@ class v720_http(log, SimpleHTTPRequestHandler):
                     "isBind": "8",
                     "domain": "v720.naxclow.com",
                     "updateUrl": None,
-                    "host": netcl_udp.get_ip(list(gws['default'].values())[0][0] if len(gws['default']) > 0 else '10.42.0.1', 80),
+                    "host": netcl_udp.get_ip(gw if gw else '10.42.0.1', 80),
                     "currTime": f'{int(datetime.timestamp(datetime.now()))}',
                     "pwd": "deadbeef",
                     "version": None
