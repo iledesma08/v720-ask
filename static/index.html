@@ -3,135 +3,220 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Camera — live</title>
+<title>Camera</title>
 <style>
-body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
-article.cam { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-img.live { width: 100%; max-width: 640px; display: block; background: #000; }
-.nota { background: #fff8e1; border: 1px solid #e0c36a; border-radius: 8px; padding: .75rem 1rem; }
-.error { color: #a00; }
-.status { font-size: .8rem; font-weight: normal; margin-left: .5rem; }
-.status.on { color: #0a0; }
-.status.off { color: #a00; }
-.msg { font-size: .9rem; color: #060; }
-button { margin-right: 1rem; }
-nav a { margin-right: 1rem; }
+:root { color-scheme: dark;
+  --bg: #0c0e12; --card: #161a22; --line: #262c3a;
+  --txt: #eceef4; --mut: #98a1b3; --acc: #7c5cff; --ok: #3ddc84; --err: #ff6b6b; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--txt); }
+header { padding: .8rem 1rem; display: flex; justify-content: space-between; align-items: center;
+  background: #10141c; position: sticky; top: 0; border-bottom: 1px solid var(--line); z-index: 2; }
+.dot { color: var(--ok); font-size: .9rem; }
+.dot.off { color: var(--err); }
+main { max-width: 900px; margin: 0 auto; padding: 1rem; }
+.live { width: 100%; aspect-ratio: 4/3; border-radius: 14px; background: #000; display: block; }
+.bar { display: flex; gap: .5rem; margin: .8rem 0; }
+.bar button { flex: 1; padding: .8rem; font-size: 1.05rem; border-radius: 12px;
+  background: var(--card); color: var(--txt); border: 1px solid var(--line); }
+.bar button.pri { background: var(--acc); color: #fff; font-weight: 700; border: none; }
+.chips { display: flex; gap: .5rem; margin: 1rem 0 .25rem; }
+.chips button { padding: .45rem .9rem; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--card); color: var(--mut); }
+.chips button.on { background: var(--acc); color: #fff; border-color: var(--acc); }
+h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; margin: 1.2rem 0 .5rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
+.shot { border-radius: 12px; overflow: hidden; background: #0a0c11; border: 1px solid var(--line); }
+.shot img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: #000; }
+.shot.sel { outline: 2px solid var(--acc); }
+.shot .tm { padding: .4rem .6rem; font-size: .8rem; color: var(--mut); }
+.foot { display: flex; gap: .5rem; margin: 1rem 0 2rem; }
+.foot button { flex: 1; padding: .7rem; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--txt); }
+.msg { color: var(--ok); }
+.error { color: var(--err); }
+.nota { color: var(--mut); font-size: .85rem; }
 </style>
 </head>
 <body>
-<h1>Camera — live</h1>
-<p class="nota"><strong>One viewer at a time:</strong> if another client is watching the live feed,
-the gateway responds <code>503 camera busy</code>. Wait until it is released and reload the page.</p>
-<div id="lista" aria-live="polite"><p>Loading cameras…</p></div>
-<p id="error" class="error" role="alert" hidden></p>
-<nav><a href="dev/list">/dev/list (JSON)</a></nav>
+<header><strong>Camera</strong><span class="dot" id="dot">waiting</span></header>
+<main>
+<noscript><p class="error">JavaScript is disabled or blocked for this site.</p></noscript>
+<p class="nota" id="build">build fresh-3</p>
+<div id="live-wrap"><img class="live" id="live" alt="Live feed"></div>
+<div class="bar">
+<button type="button" class="pri" id="save">Save snapshot</button>
+<button type="button" id="reload-live">Reload live</button>
+</div>
+<p class="msg" id="msg" hidden></p>
+<p class="error" id="error" hidden></p>
+<div class="chips" id="chips"><button data-day="" class="on">Today</button></div>
+<div id="groups"></div>
+<div class="foot">
+<button id="dl">Download selected</button>
+<button id="del">Delete selected</button>
+</div>
+<p class="nota">One viewer at a time: an open live feed answers 503 camera busy to anything else.</p>
+</main>
 <script>
-// Minimal passthrough, no dependencies.
-// All same-origin with relative URLs: works when served alongside the /dev/* proxy.
-// Auto-refresh-friendly markup: each camera is <article class="cam" data-uid>
-// with a stable <img id="live-<uid>" class="live"> across reloads.
-(function () {
-  var lista = document.getElementById('lista');
-  var error = document.getElementById('error');
-
-  function mostrarError(msg) {
-    error.textContent = msg;
-    error.hidden = false;
-  }
-
-  fetch('dev/list', { cache: 'no-store' })
-    .then(function (r) {
-      if (!r.ok) throw new Error('GET dev/list → HTTP ' + r.status);
+'use strict';
+var UID = 'ap-camera';
+var dotEl = document.getElementById('dot');
+var liveEl = document.getElementById('live');
+var msgEl = document.getElementById('msg');
+var errEl = document.getElementById('error');
+var groupsEl = document.getElementById('groups');
+var chipsEl = document.getElementById('chips');
+var buildEl = document.getElementById('build');
+var selected = {};
+function pad(n) { return String(n).padStart(2, '0'); }
+var nowD = new Date();
+var todayStr = '' + nowD.getFullYear() + pad(nowD.getMonth() + 1) + pad(nowD.getDate());
+buildEl.textContent += ' js-ok';
+window.onerror = function (m) {
+  errEl.textContent = 'JS error: ' + m;
+  errEl.hidden = false;
+};
+function say(t) { msgEl.textContent = t; msgEl.hidden = false; }
+function fail(t) { errEl.textContent = t; errEl.hidden = false; }
+function setLive(on) {
+  dotEl.textContent = on ? 'LIVE ' + UID : 'offline';
+  dotEl.className = 'dot' + (on ? '' : ' off');
+}
+function getJSON(url, ms) {
+  var ctl = new AbortController();
+  var t = setTimeout(function () { ctl.abort(); }, ms || 8000);
+  return fetch(url, { cache: 'no-store', signal: ctl.signal }).then(
+    function (r) {
+      clearTimeout(t);
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
       return r.json();
-    })
-    .then(function (cams) {
-      if (!Array.isArray(cams) || cams.length === 0) {
-        lista.innerHTML = '<p>No cameras registered.</p>';
-        return;
-      }
-      lista.textContent = '';
-      cams.forEach(function (cam) {
-        var uid = String(cam.uid || '').trim();
-        if (!uid) return;
-        var art = document.createElement('article');
-        art.className = 'cam';
-        art.setAttribute('data-uid', uid);
-
-        var h = document.createElement('h2');
-        h.textContent = uid;
-        var st = document.createElement('span');
-        st.className = 'status on';
-        st.textContent = '● online';
-        h.appendChild(st);
-        art.appendChild(h);
-
-        // Live MJPEG (same connection the browser reloads with F5).
-        var img = document.createElement('img');
-        img.id = 'live-' + uid;
-        img.className = 'live';
-        img.alt = 'Live feed of ' + uid;
-        img.src = 'dev/' + encodeURIComponent(uid) + '/live';
-        img.addEventListener('load', function () {
-          st.textContent = '● online';
-          st.className = 'status on';
-        });
-        img.addEventListener('error', function () {
-          st.textContent = '● unreachable / busy';
-          st.className = 'status off';
-          mostrarError('Could not load the live feed of ' + uid +
-            ' (503 camera busy with another viewer? Wait and reload).');
-        });
-        art.appendChild(img);
-
-        var nav = document.createElement('nav');
-        var aLive = document.createElement('a');
-        aLive.href = 'dev/' + encodeURIComponent(uid) + '/live';
-        aLive.textContent = 'Watch live (MJPEG)';
-        nav.appendChild(aLive);
-
-        var aSnap = document.createElement('a');
-        aSnap.href = 'dev/' + encodeURIComponent(uid) + '/snapshot';
-        aSnap.textContent = 'Snapshot (JPEG)';
-        nav.appendChild(aSnap);
-
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = 'Save snapshot';
-        var msg = document.createElement('p');
-        msg.className = 'msg';
-        msg.hidden = true;
-        btn.addEventListener('click', function () {
-          msg.hidden = true;
-          // The server snapshots from the live stream cache, so the
-          // feed keeps playing while saving.
-          fetch('dev/' + encodeURIComponent(uid) + '/snapshot?save=1',
-            { cache: 'no-store' })
-            .then(function (r) {
-              if (!r.ok) throw new Error('HTTP ' + r.status);
-              return r.json();
-            })
-            .then(function (j) {
-              msg.textContent = 'Saved ' + j.saved;
-              msg.hidden = false;
-            })
-            .catch(function (e) {
-              mostrarError('Save failed: ' +
-                String(e && e.message || e));
-            });
-        });
-        nav.appendChild(btn);
-        art.appendChild(nav);
-        art.appendChild(msg);
-
-        lista.appendChild(art);
-      });
-    })
-    .catch(function (e) {
-      lista.innerHTML = '<p>Could not load the camera list.</p>';
-      mostrarError(String(e && e.message || e) +
-        ' — serve this page from the same origin as the /dev/* proxy.');
+    },
+    function (e) { clearTimeout(t); throw e; });
+}
+function pollState() {
+  getJSON('dev/list', 8000).then(
+    function (cams) {
+      setLive(Array.isArray(cams) && cams.some(function (c) { return c.uid === UID; }));
+    },
+    function (e) {
+      setLive(false);
+      fail('State: ' + String((e && e.message) || e));
     });
-})();
+}
+var liveRetries = 0;
+function watchLive() {
+  liveRetries = 0;
+  liveEl.src = 'dev/' + UID + '/live?nocache=' + Date.now();
+}
+liveEl.addEventListener('error', function () {
+  if (liveRetries < 3) {
+    liveRetries += 1;
+    setTimeout(watchLive, 1500);
+  } else {
+    setLive(false);
+  }
+});
+function loadShots(day) {
+  getJSON('dev/shots' + (day ? '?day=' + day : ''), 8000).then(
+    function (shots) {
+      groupsEl.textContent = '';
+      selected = {};
+      var byDay = {};
+      shots.forEach(function (s) {
+        if (!byDay[s.day]) { byDay[s.day] = []; }
+        byDay[s.day].push(s);
+      });
+      Object.keys(byDay).sort().reverse().forEach(function (day) {
+        var h = document.createElement('h3');
+        h.className = 'day';
+        h.textContent = (day === todayStr) ? 'Today' : day;
+        groupsEl.appendChild(h);
+        var g = document.createElement('div');
+        g.className = 'grid';
+        byDay[day].forEach(function (s) {
+          var d = document.createElement('div');
+          d.className = 'shot';
+          var im = document.createElement('img');
+          im.loading = 'lazy';
+          im.alt = s.name;
+          im.src = 'dev/shots/' + encodeURIComponent(s.name);
+          var tm = document.createElement('div');
+          tm.className = 'tm';
+          tm.textContent = s.time;
+          d.appendChild(im);
+          d.appendChild(tm);
+          d.onclick = (function (name, el) {
+            return function () {
+              if (selected[name]) {
+                delete selected[name];
+                el.classList.remove('sel');
+              } else {
+                selected[name] = true;
+                el.classList.add('sel');
+              }
+            };
+          })(s.name, d);
+          g.appendChild(d);
+        });
+        groupsEl.appendChild(g);
+      });
+    },
+    function (e) { fail('Gallery: ' + String((e && e.message) || e)); });
+}
+document.getElementById('save').onclick = function () {
+  msgEl.hidden = true;
+  getJSON('dev/' + UID + '/snapshot?save=1', 15000).then(
+    function (j) {
+      say('Saved ' + j.saved);
+      loadShots(todayStr);
+    },
+    function (e) { fail('Save failed: ' + String((e && e.message) || e)); });
+};
+document.getElementById('reload-live').onclick = watchLive;
+document.getElementById('del').onclick = function () {
+  var names = Object.keys(selected);
+  if (!names.length) { say('Nothing selected.'); return; }
+  if (!window.confirm('Delete ' + names.length + ' shot(s)?')) { return; }
+  Promise.all(names.map(function (n) {
+    return fetch('dev/shots/' + encodeURIComponent(n), { method: 'DELETE' });
+  })).then(
+    function () { loadShots(todayStr); say('Deleted ' + names.length + '.'); },
+    function (e) { fail('Delete failed: ' + String((e && e.message) || e)); });
+};
+document.getElementById('dl').onclick = function () {
+  var names = Object.keys(selected);
+  if (!names.length) { say('Nothing selected.'); return; }
+  names.forEach(function (n) {
+    var a = document.createElement('a');
+    a.href = 'dev/shots/' + encodeURIComponent(n);
+    a.download = n;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+};
+chipsEl.onclick = function (ev) {
+  var b = ev.target.closest ? ev.target.closest('button') : null;
+  if (!b) { return; }
+  var btns = chipsEl.querySelectorAll('button');
+  for (var i = 0; i < btns.length; i++) { btns[i].classList.remove('on'); }
+  b.classList.add('on');
+  loadShots(b.getAttribute('data-day') || null);
+};
+getJSON('dev/list', 8000).then(
+  function (cams) {
+    var found = Array.isArray(cams) && cams.some(function (c) { return c.uid === UID; });
+    setLive(found);
+    if (found) { watchLive(); } else { fail('Camera not registered.'); }
+    loadShots(todayStr);
+    setInterval(pollState, 10000);
+  },
+  function (e) {
+    setLive(false);
+    fail('Offline: ' + String((e && e.name === 'AbortError') ? 'timeout' : ((e && e.message) || e)));
+    setInterval(pollState, 10000);
+  });
 </script>
 </body>
 </html>

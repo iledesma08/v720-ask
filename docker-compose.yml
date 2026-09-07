@@ -11,6 +11,8 @@ services:
     restart: unless-stopped
     environment:
       - SNAP_DIR=/data/snapshots
+      # Periodic snapshots, seconds between captures (0 disables).
+      # - SNAP_EVERY_SEC=300
     volumes:
       - ./snapshots:/data/snapshots
     healthcheck:

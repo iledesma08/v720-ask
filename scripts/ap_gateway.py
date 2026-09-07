@@ -47,6 +47,68 @@ _latest_ts = 0.0
 LATEST_MAX_AGE = 3.0
 
 
+def _shot_name_ok(name: str) -> bool:
+    """Allow only our own snapshot file names (no traversal)."""
+    import re
+
+    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.jpg", name or "") is not None
+
+
+def _list_shots(day: str | None = None) -> list:
+    """Saved shots newest-first: [{name, day, time}]. Day filter YYYYMMDD."""
+    import re
+
+    out = []
+    try:
+        names = os.listdir(SNAP_DIR)
+    except OSError:
+        return out
+    for name in sorted(names, reverse=True):
+        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+)?\.jpg", name)
+        if not m:
+            continue
+        if day and m.group(1) != day:
+            continue
+        t = m.group(2)
+        out.append({"name": name, "day": m.group(1),
+                    "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}"})
+    return out
+
+
+def _grab_frame():
+    """Single capture attempt, None when busy/failing. For periodic worker."""
+    if not _cam_lock.acquire(blocking=False):
+        return None
+    try:
+        sock = _open_cam(*CAMERA)
+        try:
+            _open_video(sock)
+            return next(_iter_jpegs(sock, lambda: False), None)
+        finally:
+            _close_cam(sock)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        _cam_lock.release()
+
+
+def _periodic_worker(interval: float):
+    """Save a frame every interval seconds; skip when busy. Daemon."""
+    import time as _time
+
+    while True:
+        _time.sleep(interval)
+        try:
+            img = _grab_frame()
+        except Exception:  # noqa: BLE001
+            continue
+        if img is not None:
+            try:
+                _save_snapshot(img)
+            except OSError:
+                pass
+
+
 def _save_snapshot(img: bytes) -> str:
     """Store img timestamped under SNAP_DIR, return the file name."""
     import datetime as _dt
@@ -284,11 +346,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):  # noqa: N802
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, parse_qs
 
-        route = urlparse(self.path).path
+        parts = urlparse(self.path)
+        route = parts.path
         if route in ("/", "/index.html"):
             self._static()
+        elif route == "/dbg":
+            body = (b"<!doctype html><html><body><p id=\"m\">JS did NOT run</p>"
+                    b"<script>document.getElementById('m').textContent='JS-WORKS ';"
+                    b"fetch('dev/list').then(function(r){return r.text();}).then("
+                    b"function(t){document.getElementById('m').textContent+=' FETCH-OK:'+t;},"
+                    b"function(e){document.getElementById('m').textContent+=' FETCH-FAIL:'+e;});"
+                    b"</script></body></html>")
+            self._send(200, "text/html; charset=utf-8", len(body),
+                       [("Connection", "close"), ("Cache-Control", "no-store")])
+            self.wfile.write(body)
         elif route == "/dev/list":
             body = json.dumps(
                 [{"uid": UID, "host": CAMERA[0], "port": CAMERA[1]}]
@@ -300,10 +373,62 @@ class Handler(BaseHTTPRequestHandler):
             self._snapshot()
         elif route == f"/dev/{UID}/live":
             self._live()
+        elif route == "/dev/shots":
+            query = parse_qs(parts.query)
+            body = json.dumps(
+                _list_shots(query.get("day", [None])[0])).encode()
+            self._send(200, "application/json", len(body),
+                       [("Connection", "close")])
+            self.wfile.write(body)
+        elif route.startswith("/dev/shots/"):
+            name = route[len("/dev/shots/"):]
+            if not _shot_name_ok(name):
+                self._send(400, "text/plain", 11,
+                           [("Connection", "close")])
+                self.wfile.write(b"bad filename")
+                return
+            try:
+                with open(os.path.join(SNAP_DIR, name), "rb") as fh:
+                    img = fh.read()
+            except OSError:
+                self._send(404, "text/plain", 9,
+                           [("Connection", "close")])
+                self.wfile.write(b"not found")
+                return
+            self._send(200, "image/jpeg", len(img),
+                       [("Connection", "close")])
+            self.wfile.write(img)
         else:
             self._send(404, "text/plain", 9,
                        [("Connection", "close")])
             self.wfile.write(b"not found")
+
+    def do_DELETE(self):  # noqa: N802
+        from urllib.parse import urlparse
+
+        route = urlparse(self.path).path
+        if not route.startswith("/dev/shots/"):
+            self._send(404, "text/plain", 9,
+                       [("Connection", "close")])
+            self.wfile.write(b"not found")
+            return
+        name = route[len("/dev/shots/"):]
+        if not _shot_name_ok(name):
+            self._send(400, "text/plain", 11,
+                       [("Connection", "close")])
+            self.wfile.write(b"bad filename")
+            return
+        try:
+            os.unlink(os.path.join(SNAP_DIR, name))
+        except OSError:
+            self._send(404, "text/plain", 9,
+                       [("Connection", "close")])
+            self.wfile.write(b"not found")
+            return
+        body = json.dumps({"deleted": name}).encode()
+        self._send(200, "application/json", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
 
     def _static(self):
         """Serve the bundled index page (exact file only, no listing)."""
@@ -316,7 +441,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"not found")
             return
         self._send(200, "text/html; charset=utf-8", len(body),
-                   [("Connection", "close")])
+                   [("Connection", "close"),
+                    ("Cache-Control", "no-store, must-revalidate"),
+                    ("Pragma", "no-cache"),
+                    ("Expires", "0")])
         self.wfile.write(body)
 
     def _sleep_or_gone(self, delay):
@@ -501,12 +629,21 @@ def main() -> int:
     ap.add_argument("--camera", default="192.168.169.1:6123")
     ap.add_argument("--listen", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8090)
+    ap.add_argument("--snap-every", type=float,
+                    default=float(os.environ.get("SNAP_EVERY_SEC", "0")),
+                    help="periodic snapshot interval in seconds, 0 disables")
     args = ap.parse_args()
     log.set_log_lvl(logging.WARN)
 
     global CAMERA
     host, _, port = args.camera.partition(":")
     CAMERA = (host, int(port or 6123))
+
+    if args.snap_every > 0:
+        th = threading.Thread(target=_periodic_worker,
+                              args=(args.snap_every,), daemon=True)
+        th.start()
+        print(f"periodic snapshots every {args.snap_every}s into {SNAP_DIR}")
 
     srv = ThreadingHTTPServer((args.listen, args.port), Handler)
     print(f"serving {UID} {CAMERA[0]}:{CAMERA[1]} on "
