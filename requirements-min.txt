@@ -1,0 +1,4 @@
+# Minimal headless check (py3.11, driver only, no cv2/numpy/Pillow).
+# Full legacy stack stays in requirements.txt.
+xmltodict==1.0.4
+tqdm==4.66.5
