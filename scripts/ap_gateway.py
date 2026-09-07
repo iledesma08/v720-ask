@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AP-directo MJPEG gateway (single camera, single viewer).
+"""AP-direct MJPEG gateway (single camera, single viewer).
 
 Bridges the camera at 192.168.169.1:6123 (AP mode, v720_ap protocol)
 to HTTP on the Pi's LAN side. Stdlib only + src/ imports, no cv2.

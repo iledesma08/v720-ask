@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cámara — en directo</title>
+<title>Camera — live</title>
 <style>
 body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
 article.cam { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
@@ -14,17 +14,17 @@ nav a { margin-right: 1rem; }
 </style>
 </head>
 <body>
-<h1>Cámara — en directo</h1>
-<p class="nota"><strong>Un visor a la vez:</strong> si otro cliente está viendo el directo,
-el gateway responde <code>503 camera busy</code>. Espera a que libere y recarga la página.</p>
-<div id="lista" aria-live="polite"><p>Cargando cámaras…</p></div>
+<h1>Camera — live</h1>
+<p class="nota"><strong>One viewer at a time:</strong> if another client is watching the live feed,
+the gateway responds <code>503 camera busy</code>. Wait until it is released and reload the page.</p>
+<div id="lista" aria-live="polite"><p>Loading cameras…</p></div>
 <p id="error" class="error" role="alert" hidden></p>
 <nav><a href="dev/list">/dev/list (JSON)</a></nav>
 <script>
-// Passthrough mínimo, sin dependencias.
-// Todo same-origin con URLs relativas: funciona servido junto al proxy /dev/*.
-// Markup auto-refresh-friendly: cada cámara es <article class="cam" data-uid>
-// con <img id="live-<uid>" class="live"> estable entre recargas.
+// Minimal passthrough, no dependencies.
+// All same-origin with relative URLs: works when served alongside the /dev/* proxy.
+// Auto-refresh-friendly markup: each camera is <article class="cam" data-uid>
+// with a stable <img id="live-<uid>" class="live"> across reloads.
 (function () {
   var lista = document.getElementById('lista');
   var error = document.getElementById('error');
@@ -41,7 +41,7 @@ el gateway responde <code>503 camera busy</code>. Espera a que libere y recarga 
     })
     .then(function (cams) {
       if (!Array.isArray(cams) || cams.length === 0) {
-        lista.innerHTML = '<p>No hay cámaras registradas.</p>';
+        lista.innerHTML = '<p>No cameras registered.</p>';
         return;
       }
       lista.textContent = '';
@@ -56,22 +56,22 @@ el gateway responde <code>503 camera busy</code>. Espera a que libere y recarga 
         h.textContent = uid;
         art.appendChild(h);
 
-        // MJPEG en directo (misma conexión que el navegador recarga con F5).
+        // Live MJPEG (same connection the browser reloads with F5).
         var img = document.createElement('img');
         img.id = 'live-' + uid;
         img.className = 'live';
-        img.alt = 'Directo de ' + uid;
+        img.alt = 'Live feed of ' + uid;
         img.src = 'dev/' + encodeURIComponent(uid) + '/live';
         img.addEventListener('error', function () {
-          mostrarError('No se pudo cargar el directo de ' + uid +
-            ' (¿503 cámara ocupada por otro visor? Espera y recarga).');
+          mostrarError('Could not load the live feed of ' + uid +
+            ' (503 camera busy with another viewer? Wait and reload).');
         });
         art.appendChild(img);
 
         var nav = document.createElement('nav');
         var aLive = document.createElement('a');
         aLive.href = 'dev/' + encodeURIComponent(uid) + '/live';
-        aLive.textContent = 'Ver en directo (MJPEG)';
+        aLive.textContent = 'Watch live (MJPEG)';
         nav.appendChild(aLive);
 
         var aSnap = document.createElement('a');
@@ -84,9 +84,9 @@ el gateway responde <code>503 camera busy</code>. Espera a que libere y recarga 
       });
     })
     .catch(function (e) {
-      lista.innerHTML = '<p>No se pudo cargar la lista de cámaras.</p>';
+      lista.innerHTML = '<p>Could not load the camera list.</p>';
       mostrarError(String(e && e.message || e) +
-        ' — sirve esta página en el mismo origen que el proxy /dev/*.');
+        ' — serve this page from the same origin as the /dev/* proxy.');
     });
 })();
 </script>

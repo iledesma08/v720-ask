@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless check against V720/Naxclow camera in AP-directo mode.
+"""Headless check against V720/Naxclow camera in AP-direct mode.
 
 Usage (from repo root, Pi with wlan0 -> Nax_*):
     python3 -m venv /tmp/v720fp && /tmp/v720fp/bin/pip install -r requirements-min.txt
