@@ -149,6 +149,28 @@ class v720_ap:
             'IrLed': 1 if ena else 0
         })
 
+    # Directions from the vendor app (NaxclowRtcEngine PTZ_STATUS_*):
+    # 0 calibrate/stop, 1 right, 2 left, 3 up, 4 down. The app repeats
+    # the send every 80 ms while pressed and stops silently (see #24).
+    PTZ_CALIBRATE = 0
+    PTZ_RIGHT = 1
+    PTZ_LEFT = 2
+    PTZ_UP = 3
+    PTZ_DOWN = 4
+
+    def ptz(self, direction: int):
+        '''
+        Move PTZ mount, one shot. Caller repeats every ~80 ms while held.
+        :param direction: 0 stop/calibrate, 1 right, 2 left, 3 up, 4 down
+        '''
+        if direction not in (0, 1, 2, 3, 4):
+            raise ValueError(f'bad PTZ direction: {direction}')
+        return self._ap_req({
+            'code': cmd_udp.CODE_FORWARD_DEV_MOTOR_STATE,
+            'devTarget': prot_json_udp.DEFAULT_DEV_TARGET,
+            'motorState': direction
+        })
+
     def set_ap_pwd(self, pwd):
         return self._ap_req({
             'code': cmd_udp.CODE_FORWARD_DEV_SET_AP_PWD,

@@ -34,6 +34,11 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
 .foot { display: flex; gap: .5rem; margin: 1rem 0 2rem; }
 .foot button { flex: 1; padding: .7rem; border-radius: 10px; border: 1px solid var(--line);
   background: var(--card); color: var(--txt); }
+.pad { display: grid; grid-template-columns: repeat(3, 64px); gap: .4rem; justify-content: center;
+  margin: .8rem 0; }
+.pad button { padding: .9rem; font-size: 1.2rem; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--card); color: var(--txt); touch-action: none; }
+.pad button.on { background: var(--acc); color: #fff; }
 .msg { color: var(--ok); }
 .error { color: var(--err); }
 .nota { color: var(--mut); font-size: .85rem; }
@@ -49,6 +54,11 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
     <button type="button" class="pri" id="save">Save snapshot</button>
     <button type="button" id="record">Record 10s clip</button>
     <button type="button" id="reload-live">Reload live</button>
+  </div>
+  <div class="pad" id="pad" aria-label="PTZ controls">
+    <span></span><button type="button" data-dir="3" aria-label="Up">▲</button><span></span>
+    <button type="button" data-dir="2" aria-label="Left">◀</button><button type="button" data-dir="0" aria-label="Center">●</button><button type="button" data-dir="1" aria-label="Right">▶</button>
+    <span></span><button type="button" data-dir="4" aria-label="Down">▼</button><span></span>
   </div>
 <p class="msg" id="msg" hidden></p>
 <p class="error" id="error" hidden></p>
@@ -184,6 +194,36 @@ document.getElementById('save').onclick = function () {
     function (e) { fail('Save failed: ' + String((e && e.message) || e)); });
 };
 document.getElementById('reload-live').onclick = watchLive;
+(function initPad() {
+  var pad = document.getElementById('pad');
+  var timer = null;
+  function press(dir, btn) {
+    if (btn) { btn.classList.add('on'); }
+    fetch('dev/' + UID + '/ptz?dir=' + dir + '&ms=400', { method: 'POST', cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+        return r.json();
+      })
+      .catch(function (e) { fail('PTZ failed: ' + String((e && e.message) || e)); });
+  }
+  function release(btn) {
+    if (btn) { btn.classList.remove('on'); }
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+  pad.querySelectorAll('button').forEach(function (btn) {
+    var dir = btn.getAttribute('data-dir');
+    btn.addEventListener('pointerdown', function (ev) {
+      ev.preventDefault();
+      press(dir, btn);
+      if (dir !== '0') {
+        timer = setInterval(function () { press(dir, null); }, 500);
+      }
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) {
+      btn.addEventListener(ev, function () { release(btn); });
+    });
+  });
+})();
 document.getElementById('record').onclick = function () {
   say('Recording 10s clip (live pauses)…');
   var liveSrc = liveEl.getAttribute('src');

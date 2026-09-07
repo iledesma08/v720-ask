@@ -39,6 +39,24 @@ SNAP_DIR = os.environ.get(
     "SNAP_DIR", os.path.join(os.path.dirname(__file__), "..", "snapshots"))
 _cam_lock = threading.Lock()
 
+# Serializes all writes on a shared live socket (605 confirms vs PTZ).
+_send_lock = threading.Lock()
+# Socket of the active live viewer, if any: PTZ rides on it so moving
+# works while watching (STA precedent: control + media over one TCP).
+_live_sock = None
+_live_sock_lock = threading.Lock()
+
+
+def _send_pkt(sock, data) -> None:
+    with _send_lock:
+        sock.send(data)
+
+
+def _live_register(sock) -> None:
+    global _live_sock
+    with _live_sock_lock:
+        _live_sock = sock
+
 # Latest completed JPEG per gateway, published by the live reader thread.
 # Lets /snapshot serve from cache while a viewer holds the camera lock.
 _latest_lock = threading.Lock()
@@ -236,6 +254,31 @@ def _save_snapshot(img: bytes) -> str:
     return name
 
 
+def _ptz_packet(direction: int) -> bytes:
+    from prot_ap import prot_ap
+    import cmd_udp
+
+    return prot_ap(content={
+        "code": cmd_udp.CODE_FORWARD_DEV_MOTOR_STATE,
+        "devTarget": "deadbeef",
+        "motorState": direction,
+    }).req()
+
+
+def _ptz_repeat(sock, direction: int, ms: int) -> None:
+    """Repeat 212 sends every 80 ms for `ms` (app drive behavior)."""
+    import time as _time
+
+    end = _time.monotonic() + ms / 1000.0
+    pkt = _ptz_packet(direction)
+    while True:
+        _send_pkt(sock, pkt)
+        remaining = end - _time.monotonic()
+        if remaining <= 0:
+            break
+        _time.sleep(min(0.08, remaining))
+
+
 def _resync_request(sock, data, match, tries=30):
     """Send once, then drain until a response matching match() arrives.
 
@@ -343,7 +386,8 @@ def _close_cam(sock):
     from prot_ap import prot_ap
 
     try:
-        sock.send(prot_ap(content={"code": 0, "devTarget": "deadbeef"}).req())
+        _send_pkt(sock, prot_ap(content={"code": 0,
+                                         "devTarget": "deadbeef"}).req())
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -387,7 +431,7 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
                     payload.extend(int.to_bytes(pid, 4, "little"))
                 pending.clear()
                 try:
-                    sock.send(prot_udp(
+                    _send_pkt(sock, prot_udp(
                         payload=payload,
                         cmd=cmd_udp.P2P_UDP_CMD_RETRANSMISSION_CONFIRM,
                     ).req())
@@ -546,6 +590,10 @@ class Handler(BaseHTTPRequestHandler):
 
         parts = urlparse(self.path)
         route = parts.path
+        query = parse_qs(parts.query)
+        if route == f"/dev/{UID}/ptz":
+            self._ptz(query)
+            return
         if route != f"/dev/{UID}/clip":
             self._send(404, "text/plain", 9,
                        [("Connection", "close")])
@@ -624,6 +672,71 @@ class Handler(BaseHTTPRequestHandler):
             if now >= end:
                 return False
             _time.sleep(min(0.2, end - now))
+
+    def _ptz(self, query) -> None:
+        """Move the mount: ?dir=0..4 (0 stop/calibrate) &ms=80..2000.
+
+        Rides the active live socket when a viewer holds it (control and
+        media share one TCP, STA precedent); else a dedicated connection.
+        Sends are fire-and-forget repeats every 80 ms, like the vendor app.
+        """
+        global _live_sock
+        try:
+            direction = int(query.get("dir", ["-1"])[0])
+        except ValueError:
+            direction = -1
+        if direction not in (0, 1, 2, 3, 4):
+            self._send(400, "text/plain", 14,
+                       [("Connection", "close")])
+            self.wfile.write(b"bad direction")
+            return
+        try:
+            ms = int(query.get("ms", ["400"])[0])
+        except ValueError:
+            ms = 400
+        ms = min(max(ms, 80), 2000)
+
+        with _live_sock_lock:
+            shared = _live_sock
+        if shared is not None:
+            try:
+                _ptz_repeat(shared, direction, ms)
+            except Exception as exc:  # noqa: BLE001 - stale socket: fall through
+                log("ap-gateway").warn("ptz: shared socket dead (%s)", exc)
+                with _live_sock_lock:
+                    if _live_sock is shared:
+                        _live_sock = None
+                shared = None
+            else:
+                body = json.dumps({"moved": direction, "ms": ms,
+                                   "via": "live"}).encode()
+                self._send(200, "application/json", len(body),
+                           [("Connection", "close")])
+                self.wfile.write(body)
+                return
+        if not _cam_lock.acquire(blocking=False):
+            self._send(503, "text/plain", 11,
+                       [("Connection", "close")])
+            self.wfile.write(b"camera busy")
+            return
+        try:
+            sock = _open_cam(*CAMERA)
+            try:
+                _ptz_repeat(sock, direction, ms)
+            finally:
+                _close_cam(sock)
+        except Exception as exc:  # noqa: BLE001
+            self._send(502, "text/plain", len(str(exc)),
+                       [("Connection", "close")])
+            self.wfile.write(str(exc).encode())
+            return
+        finally:
+            _cam_lock.release()
+        body = json.dumps({"moved": direction, "ms": ms,
+                           "via": "direct"}).encode()
+        self._send(200, "application/json", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
 
     def _snapshot(self):
         import time as _time
@@ -710,11 +823,13 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     sock = _open_cam(*CAMERA)
                     _open_video(sock)
+                    _live_register(sock)
                 except Exception as exc:  # noqa: BLE001 - open failed: retry
                     gwlog.warn("live: open failed (%s), retry %d/%d",
                                exc, retries + 1, max_retries)
                     if sock is not None:
                         _close_cam(sock)
+                        _live_register(None)
                         sock = None
                     retries += 1
                     if retries > max_retries:
@@ -745,6 +860,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.end_headers()
                     except (BrokenPipeError, ConnectionResetError):
                         _close_cam(sock)
+                        _live_register(None)
                         sock = None
                         break
                     headers_sent = True
@@ -768,6 +884,7 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     if sock is not None:
                         _close_cam(sock)
+                        _live_register(None)
                         sock = None
                 if client_gone or self.wfile.closed:
                     break
@@ -786,6 +903,7 @@ class Handler(BaseHTTPRequestHandler):
                     _close_cam(sock)
                 except Exception:  # noqa: BLE001
                     pass
+            _live_register(None)
             _cam_lock.release()
 
 
