@@ -1,6 +1,94 @@
-<html>
-    <head>
-    </head>
-    <body>
-    </body>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cámara — en directo</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+article.cam { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+img.live { width: 100%; max-width: 640px; display: block; background: #000; }
+.nota { background: #fff8e1; border: 1px solid #e0c36a; border-radius: 8px; padding: .75rem 1rem; }
+.error { color: #a00; }
+nav a { margin-right: 1rem; }
+</style>
+</head>
+<body>
+<h1>Cámara — en directo</h1>
+<p class="nota"><strong>Un visor a la vez:</strong> si otro cliente está viendo el directo,
+el gateway responde <code>503 camera busy</code>. Espera a que libere y recarga la página.</p>
+<div id="lista" aria-live="polite"><p>Cargando cámaras…</p></div>
+<p id="error" class="error" role="alert" hidden></p>
+<nav><a href="dev/list">/dev/list (JSON)</a></nav>
+<script>
+// Passthrough mínimo, sin dependencias.
+// Todo same-origin con URLs relativas: funciona servido junto al proxy /dev/*.
+// Markup auto-refresh-friendly: cada cámara es <article class="cam" data-uid>
+// con <img id="live-<uid>" class="live"> estable entre recargas.
+(function () {
+  var lista = document.getElementById('lista');
+  var error = document.getElementById('error');
+
+  function mostrarError(msg) {
+    error.textContent = msg;
+    error.hidden = false;
+  }
+
+  fetch('dev/list', { cache: 'no-store' })
+    .then(function (r) {
+      if (!r.ok) throw new Error('GET dev/list → HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function (cams) {
+      if (!Array.isArray(cams) || cams.length === 0) {
+        lista.innerHTML = '<p>No hay cámaras registradas.</p>';
+        return;
+      }
+      lista.textContent = '';
+      cams.forEach(function (cam) {
+        var uid = String(cam.uid || '').trim();
+        if (!uid) return;
+        var art = document.createElement('article');
+        art.className = 'cam';
+        art.setAttribute('data-uid', uid);
+
+        var h = document.createElement('h2');
+        h.textContent = uid;
+        art.appendChild(h);
+
+        // MJPEG en directo (misma conexión que el navegador recarga con F5).
+        var img = document.createElement('img');
+        img.id = 'live-' + uid;
+        img.className = 'live';
+        img.alt = 'Directo de ' + uid;
+        img.src = 'dev/' + encodeURIComponent(uid) + '/live';
+        img.addEventListener('error', function () {
+          mostrarError('No se pudo cargar el directo de ' + uid +
+            ' (¿503 cámara ocupada por otro visor? Espera y recarga).');
+        });
+        art.appendChild(img);
+
+        var nav = document.createElement('nav');
+        var aLive = document.createElement('a');
+        aLive.href = 'dev/' + encodeURIComponent(uid) + '/live';
+        aLive.textContent = 'Ver en directo (MJPEG)';
+        nav.appendChild(aLive);
+
+        var aSnap = document.createElement('a');
+        aSnap.href = 'dev/' + encodeURIComponent(uid) + '/snapshot';
+        aSnap.textContent = 'Snapshot (JPEG)';
+        nav.appendChild(aSnap);
+        art.appendChild(nav);
+
+        lista.appendChild(art);
+      });
+    })
+    .catch(function (e) {
+      lista.innerHTML = '<p>No se pudo cargar la lista de cámaras.</p>';
+      mostrarError(String(e && e.message || e) +
+        ' — sirve esta página en el mismo origen que el proxy /dev/*.');
+    });
+})();
+</script>
+</body>
 </html>

@@ -267,20 +267,52 @@ class Handler(BaseHTTPRequestHandler):
                        [("Connection", "close")])
             self.wfile.write(b"not found")
 
+    def _sleep_or_gone(self, delay):
+        """Sleep delay seconds, aborting early if the viewer went away."""
+        import time as _time
+
+        end = _time.monotonic() + delay
+        while True:
+            if self.wfile.closed:
+                return True
+            now = _time.monotonic()
+            if now >= end:
+                return False
+            _time.sleep(min(0.2, end - now))
+
     def _snapshot(self):
+        import time as _time
+
         if not _cam_lock.acquire(blocking=False):
             self._send(503, "text/plain", 11,
                        [("Connection", "close")])
             self.wfile.write(b"camera busy")
             return
+        gwlog = log("ap-gateway")
+        max_retries = 3
+        delay = 2.0
         try:
-            sock = _open_cam(*CAMERA)
-            try:
-                _open_video(sock)
-                frames = _iter_jpegs(sock, lambda: False)
-                img = next(frames, None)
-            finally:
-                _close_cam(sock)
+            img = None
+            for attempt in range(max_retries + 1):
+                try:
+                    sock = _open_cam(*CAMERA)
+                    try:
+                        _open_video(sock)
+                        frames = _iter_jpegs(sock, lambda: False)
+                        img = next(frames, None)
+                    finally:
+                        _close_cam(sock)
+                except Exception as exc:  # noqa: BLE001 - reopen on drop
+                    gwlog.warn("snapshot: attempt %d/%d failed (%s)",
+                               attempt + 1, max_retries + 1, exc)
+                    img = None
+                if img is not None:
+                    break
+                if attempt < max_retries:
+                    gwlog.warn("snapshot: no frame, retry %d/%d in %.0fs",
+                               attempt + 1, max_retries, delay)
+                    _time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
             if img is None:
                 self._send(502, "text/plain", 17,
                            [("Connection", "close")])
@@ -302,36 +334,94 @@ class Handler(BaseHTTPRequestHandler):
                        [("Connection", "close")])
             self.wfile.write(b"camera busy")
             return
+        gwlog = log("ap-gateway")
+        max_retries = 5
+        delay = 2.0
+        max_delay = 60.0
+        retries = 0
+        headers_sent = False
+        sock = None
         try:
-            sock = _open_cam(*CAMERA)
-            try:
-                self.send_response(200)
-                self.send_header("Content-type",
-                                 f"multipart/x-mixed-replace; boundary={BOUNDARY}")
-                self.send_header("Connection", "close")
-                self.send_header("Pragma", "no-cache")
-                self.end_headers()
-                _open_video(sock)
-                for img in _iter_jpegs(sock, lambda: self.wfile.closed):
-                    try:
-                        self.wfile.write(f"--{BOUNDARY}\r\n".encode())
-                        self.wfile.write(b"Content-type: image/jpeg\r\n")
-                        self.wfile.write(
-                            f"Content-length: {len(img)}\r\n\r\n".encode())
-                        self.wfile.write(img)
-                        self.wfile.write(b"\r\n")
-                    except (BrokenPipeError, ConnectionResetError):
+            while True:
+                try:
+                    sock = _open_cam(*CAMERA)
+                    _open_video(sock)
+                except Exception as exc:  # noqa: BLE001 - open failed: retry
+                    gwlog.warn("live: open failed (%s), retry %d/%d",
+                               exc, retries + 1, max_retries)
+                    if sock is not None:
+                        _close_cam(sock)
+                        sock = None
+                    retries += 1
+                    if retries > max_retries:
+                        if not headers_sent:
+                            try:
+                                msg = b"camera unavailable"
+                                self._send(502, "text/plain", len(msg),
+                                           [("Connection", "close")])
+                                self.wfile.write(msg)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                        else:
+                            gwlog.warn("live: giving up after %d retries",
+                                       max_retries)
                         break
-            finally:
-                _close_cam(sock)
-        except Exception as exc:  # noqa: BLE001
-            try:
-                self._send(502, "text/plain", len(str(exc)),
-                           [("Connection", "close")])
-                self.wfile.write(str(exc).encode())
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+                    if self._sleep_or_gone(delay):
+                        break
+                    delay = min(delay * 2, max_delay)
+                    continue
+                if not headers_sent:
+                    try:
+                        self.send_response(200)
+                        self.send_header(
+                            "Content-type",
+                            f"multipart/x-mixed-replace; boundary={BOUNDARY}")
+                        self.send_header("Connection", "close")
+                        self.send_header("Pragma", "no-cache")
+                        self.end_headers()
+                    except (BrokenPipeError, ConnectionResetError):
+                        _close_cam(sock)
+                        sock = None
+                        break
+                    headers_sent = True
+                client_gone = False
+                try:
+                    for img in _iter_jpegs(sock, lambda: self.wfile.closed):
+                        retries = 0
+                        delay = 2.0
+                        try:
+                            self.wfile.write(f"--{BOUNDARY}\r\n".encode())
+                            self.wfile.write(b"Content-type: image/jpeg\r\n")
+                            self.wfile.write(
+                                f"Content-length: {len(img)}\r\n\r\n".encode())
+                            self.wfile.write(img)
+                            self.wfile.write(b"\r\n")
+                        except (BrokenPipeError, ConnectionResetError):
+                            client_gone = True
+                            break
+                except Exception as exc:  # noqa: BLE001 - stream died: retry
+                    gwlog.warn("live: stream error (%s)", exc)
+                finally:
+                    if sock is not None:
+                        _close_cam(sock)
+                        sock = None
+                if client_gone or self.wfile.closed:
+                    break
+                retries += 1
+                if retries > max_retries:
+                    gwlog.warn("live: giving up after %d retries", max_retries)
+                    break
+                gwlog.warn("live: stream died, retry %d/%d in %.0fs",
+                           retries, max_retries, delay)
+                if self._sleep_or_gone(delay):
+                    break
+                delay = min(delay * 2, max_delay)
         finally:
+            if sock is not None:
+                try:
+                    _close_cam(sock)
+                except Exception:  # noqa: BLE001
+                    pass
             _cam_lock.release()
 
 

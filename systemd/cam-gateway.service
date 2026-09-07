@@ -1,0 +1,15 @@
+[Unit]
+Description=Camera AP-directo MJPEG gateway (8090)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=askesis-pi5
+WorkingDirectory=/mnt/data/docker/opencode/projects/v720-ask
+Environment=PYTHONPATH=src
+ExecStart=/tmp/v720fp/bin/python scripts/ap_gateway.py --port 8090
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
