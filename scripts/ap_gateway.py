@@ -153,9 +153,32 @@ def _retention_worker(days: float) -> None:
             pass
 
 
+def _transcode_sd(path: str):
+    """Transcode a downloaded SD AVI to browser-playable mp4 next to it.
+
+    Returns the mp4 file name, or None when ffmpeg cannot convert it.
+    """
+    import subprocess
+
+    if not path.endswith(".avi"):
+        return None
+    out = path[:-len(".avi")] + ".mp4"
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", path,
+             "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-movflags", "+faststart", out],
+            timeout=300, capture_output=True)
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0 or not os.path.exists(out):
+        return None
+    return os.path.basename(out)
+
+
 def _shot_thumb(name: str):
     """First frame of an AVI as JPEG bytes, cached next to it. None if off."""
-    import cv2 as _cv2
+    import subprocess
 
     if not name.endswith(".avi") or not _shot_name_ok(name):
         return None
@@ -167,22 +190,20 @@ def _shot_thumb(name: str):
                 return fh.read()
         except OSError:
             return None
-    v = _cv2.VideoCapture(path)
     try:
-        ok, frame = v.read()
-    finally:
-        v.release()
-    if not ok or frame is None:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", path,
+             "-vframes", "1", thumb],
+            timeout=20, capture_output=True)
+    except (OSError, ValueError):
         return None
-    ok, buf = _cv2.imencode(".jpg", frame)
-    if not ok:
+    if proc.returncode != 0 or not os.path.exists(thumb):
         return None
     try:
-        with open(thumb, "wb") as fh:
-            fh.write(bytes(buf))
+        with open(thumb, "rb") as fh:
+            return fh.read()
     except OSError:
-        pass
-    return bytes(buf)
+        return None
 
 
 def _shot_name_ok(name: str) -> bool:
@@ -890,7 +911,13 @@ class Handler(BaseHTTPRequestHandler):
             os.makedirs(SNAP_DIR, exist_ok=True)
             with open(path, "wb") as fh:
                 fh.write(data)
-            return {"file": name, "bytes": len(data)}
+            mp4 = _transcode_sd(path)
+            if mp4 is not None:
+                try:
+                    os.unlink(path)  # gallery keeps the playable mp4 only
+                except OSError:
+                    pass
+            return {"file": mp4 or name, "bytes": len(data), "mp4": mp4}
 
         res = _sd_call(_fetch)
         if res is None:

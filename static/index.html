@@ -490,7 +490,8 @@ function loadSdDay(date, btn) {
               return rr.json();
             })
             .then(function (jj) {
-              say('Saved ' + jj.file + ' (' + jj.bytes + 'B)');
+              say('Saved ' + jj.file + ' (' + jj.bytes + 'B)' +
+                (jj.mp4 ? ', plays as ' + jj.mp4 : ''));
               loadShots(null);
               b.textContent = 'Downloaded';
             })
