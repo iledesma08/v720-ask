@@ -10,46 +10,91 @@
   --txt: #eceef4; --mut: #98a1b3; --acc: #7c5cff; --ok: #3ddc84; --err: #ff6b6b; }
 * { box-sizing: border-box; }
 body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--txt); }
-header { padding: .8rem 1rem; display: flex; justify-content: space-between; align-items: center;
-  background: #10141c; position: sticky; top: 0; border-bottom: 1px solid var(--line); z-index: 2; }
+header { padding: .8rem 1rem; background: #10141c; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 2; }
+.top { display: flex; justify-content: space-between; align-items: center; }
 .dot { color: var(--ok); font-size: .9rem; }
 .dot.off { color: var(--err); }
+.tabs { display: flex; gap: .4rem; margin-top: .6rem; }
+.tabs button { flex: 1; padding: .6rem; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--mut); font-size: .95rem; }
+.tabs button.on { background: var(--acc); color: #fff; border-color: var(--acc); font-weight: 700; }
 main { max-width: 900px; margin: 0 auto; padding: 1rem; }
+.view { display: none; }
+.view.on { display: block; }
 .live { width: 100%; aspect-ratio: 4/3; border-radius: 14px; background: #000; display: block; }
+.live[hidden] { display: none; }
+#countdown { text-align: center; padding: 1rem 0; }
+#countdown[hidden] { display: none; }
 .bar { display: flex; gap: .5rem; margin: .8rem 0; }
 .bar button { flex: 1; padding: .8rem; font-size: 1.05rem; border-radius: 12px;
   background: var(--card); color: var(--txt); border: 1px solid var(--line); }
 .bar button.pri { background: var(--acc); color: #fff; font-weight: 700; border: none; }
-.chips { display: flex; gap: .5rem; margin: 1rem 0 .25rem; }
+.pad { display: grid; grid-template-columns: repeat(3, 64px); gap: .4rem; justify-content: center; margin: .8rem 0; }
+.pad button { padding: .9rem; font-size: 1.2rem; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--card); color: var(--txt); touch-action: none; }
+.pad button.on { background: var(--acc); color: #fff; }
+.chips { display: flex; gap: .5rem; margin: 1rem 0 .25rem; flex-wrap: wrap; }
 .chips button { padding: .45rem .9rem; border-radius: 999px; border: 1px solid var(--line);
   background: var(--card); color: var(--mut); }
 .chips button.on { background: var(--acc); color: #fff; border-color: var(--acc); }
 h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; margin: 1.2rem 0 .5rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
 .shot { border-radius: 12px; overflow: hidden; background: #0a0c11; border: 1px solid var(--line); }
-.shot img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: #000; }
-.shot video { width: 100%; aspect-ratio: 4/3; display: block; background: #000; }
+.shot img, .shot video { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: #000; }
 .shot.sel { outline: 2px solid var(--acc); }
 .shot .tm { padding: .4rem .6rem; font-size: .8rem; color: var(--mut); }
+.src { font-size: .7rem; border: 1px solid var(--line); border-radius: 6px; padding: .1rem .35rem; }
 .foot { display: flex; gap: .5rem; margin: 1rem 0 2rem; }
 .foot button { flex: 1; padding: .7rem; border-radius: 10px; border: 1px solid var(--line);
   background: var(--card); color: var(--txt); }
-.pad { display: grid; grid-template-columns: repeat(3, 64px); gap: .4rem; justify-content: center;
-  margin: .8rem 0; }
-.pad button { padding: .9rem; font-size: 1.2rem; border-radius: 12px; border: 1px solid var(--line);
-  background: var(--card); color: var(--txt); touch-action: none; }
-.pad button.on { background: var(--acc); color: #fff; }
 .msg { color: var(--ok); }
 .error { color: var(--err); }
 .nota { color: var(--mut); font-size: .85rem; }
+.calhead { display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 .5rem; }
+.calhead strong { font-size: 1.05rem; }
+.calhead button { padding: .5rem .9rem; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card); color: var(--txt); font-size: 1rem; }
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: .3rem; }
+.cal .hd { color: var(--mut); font-size: .75rem; text-align: center; }
+.cal button { aspect-ratio: 1; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--card); color: var(--txt); font-size: .85rem; }
+.cal button.off { opacity: .3; }
+.cal button.has { background: #fff; color: #111; font-weight: 700; border-color: #fff; }
+.cal button.sel { outline: 2px solid var(--acc); }
+.row { display: flex; gap: .5rem; align-items: center; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; padding: .6rem .8rem; margin-bottom: .5rem; }
+.row span { flex: 1; }
+.row button { padding: .5rem .8rem; border-radius: 8px; border: 1px solid var(--line);
+  background: #0a0c11; color: var(--txt); }
 </style>
 </head>
 <body>
-<header><strong>Camera</strong><span class="dot" id="dot">waiting</span></header>
+<header>
+  <div class="top"><strong>Camera</strong><span class="dot" id="dot">waiting</span></div>
+  <nav class="tabs" id="tabs">
+    <button data-v="v-cam" class="on">Camera</button>
+    <button data-v="v-rpi">RPi Gallery</button>
+    <button data-v="v-sd">SD Gallery</button>
+  </nav>
+</header>
 <main>
 <noscript><p class="error">JavaScript is disabled or blocked for this site.</p></noscript>
-<p class="nota" id="build">build fresh-3</p>
-<div id="live-wrap"><img class="live" id="live" alt="Live feed"></div>
+<p class="nota" id="build">build tabs-1</p>
+
+<section class="view on" id="v-cam">
+  <div id="live-wrap"><img class="live" id="live" alt="Live feed"></div>
+  <p class="msg" id="cmsg" hidden></p>
+  <div id="countdown" hidden>
+    <svg viewBox="0 0 120 120" width="120" height="120">
+      <circle cx="60" cy="60" r="52" fill="none" stroke="#262c3a" stroke-width="10"/>
+      <circle id="cd-arc" cx="60" cy="60" r="52" fill="none" stroke="#7c5cff" stroke-width="10"
+        stroke-linecap="round" stroke-dasharray="326.7" stroke-dashoffset="0"
+        transform="rotate(-90 60 60)"/>
+      <text id="cd-num" x="60" y="72" text-anchor="middle" font-size="30" fill="#eceef4">10</text>
+    </svg>
+    <p class="nota">Recording…</p>
+  </div>
   <div class="bar">
     <button type="button" class="pri" id="save">Save snapshot</button>
     <button type="button" id="record">Record 10s clip</button>
@@ -60,14 +105,31 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
     <button type="button" data-dir="2" aria-label="Left">◀</button><button type="button" data-dir="0" aria-label="Center">●</button><button type="button" data-dir="1" aria-label="Right">▶</button>
     <span></span><button type="button" data-dir="4" aria-label="Down">▼</button><span></span>
   </div>
-<p class="msg" id="msg" hidden></p>
-<p class="error" id="error" hidden></p>
-<div class="chips" id="chips"><button data-day="" class="on">Today</button></div>
-<div id="groups"></div>
-<div class="foot">
-<button id="dl">Download selected</button>
-<button id="del">Delete selected</button>
-</div>
+</section>
+
+<section class="view" id="v-rpi">
+  <p class="msg" id="msg" hidden></p>
+  <p class="error" id="error" hidden></p>
+  <div class="chips" id="chips"><button data-day="" class="on">Today</button></div>
+  <div id="groups"></div>
+  <div class="foot">
+    <button id="dl">Download selected</button>
+    <button id="del">Delete selected</button>
+  </div>
+</section>
+
+<section class="view" id="v-sd">
+  <div class="calhead">
+    <button id="mprev" aria-label="Previous month">◀</button>
+    <strong id="mtitle">Month</strong>
+    <button id="mnext" aria-label="Next month">▶</button>
+  </div>
+  <p class="error" id="sd-error" hidden></p>
+  <div class="cal" id="cal"></div>
+  <div id="dayclips" style="margin-top:1rem"></div>
+  <p class="nota">Camera clock runs UTC. Downloading pauses camera recording while transferring. No delete yet: this firmware ignores delete commands.</p>
+</section>
+
 <p class="nota">One viewer at a time: an open live feed answers 503 camera busy to anything else.</p>
 </main>
 <script>
@@ -89,11 +151,19 @@ window.onerror = function (m) {
   errEl.textContent = 'JS error: ' + m;
   errEl.hidden = false;
 };
-function say(t) { msgEl.textContent = t; msgEl.hidden = false; }
+function say(t) {
+  msgEl.textContent = t;
+  msgEl.hidden = false;
+  var c = document.getElementById('cmsg');
+  if (c) { c.textContent = t; c.hidden = false; }
+}
 function fail(t) { errEl.textContent = t; errEl.hidden = false; }
-function setLive(on) {
+function setLive(on, busy) {
   dotEl.textContent = on ? 'LIVE ' + UID : 'offline';
   dotEl.className = 'dot' + (on ? '' : ' off');
+  if (busy) {
+    dotEl.textContent += ' (busy: ' + busy + ')';
+  }
 }
 function getJSON(url, ms) {
   var ctl = new AbortController();
@@ -109,17 +179,18 @@ function getJSON(url, ms) {
 function pollState() {
   getJSON('dev/list', 8000).then(
     function (cams) {
-      setLive(Array.isArray(cams) && cams.some(function (c) { return c.uid === UID; }));
+      var cam = Array.isArray(cams) && cams.filter(function (c) { return c.uid === UID; })[0];
+      setLive(!!cam, cam && cam.busy);
     },
-    function (e) {
-      setLive(false);
-      fail('State: ' + String((e && e.message) || e));
-    });
+    function () { setLive(false); });
 }
 var liveRetries = 0;
 function watchLive() {
   liveRetries = 0;
   liveEl.src = 'dev/' + UID + '/live?nocache=' + Date.now();
+}
+function pauseLive() {
+  liveEl.removeAttribute('src');
 }
 liveEl.addEventListener('error', function () {
   if (liveRetries < 3) {
@@ -129,6 +200,26 @@ liveEl.addEventListener('error', function () {
     setLive(false);
   }
 });
+// Tabs: leaving Camera pauses the live feed (single-session camera).
+  document.getElementById('tabs').onclick = tabsClick;
+  function tabsClick(ev) {
+    var b = ev.target.closest ? ev.target.closest('button') : null;
+    if (!b) { return; }
+    switchTab(b.getAttribute('data-v'));
+  }
+  function switchTab(v) {
+    var btns = document.querySelectorAll('#tabs button');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle('on', btns[i].getAttribute('data-v') === v);
+    }
+    var views = document.querySelectorAll('.view');
+    for (var k = 0; k < views.length; k++) { views[k].classList.remove('on'); }
+    document.getElementById(v).classList.add('on');
+    if (v === 'v-cam') { watchLive(); } else { pauseLive(); }
+  }
+function kindBadge(kind) {
+  return kind === 'video' ? 'clip' : (kind === 'file' ? 'sd' : 'shot');
+}
 function loadShots(day) {
   getJSON('dev/shots' + (day ? '?day=' + day : ''), 8000).then(
     function (shots) {
@@ -146,25 +237,40 @@ function loadShots(day) {
         groupsEl.appendChild(h);
         var g = document.createElement('div');
         g.className = 'grid';
-          byDay[day].forEach(function (s) {
-            var d = document.createElement('div');
-            d.className = 'shot';
-            if (s.kind === 'video') {
-              var v = document.createElement('video');
-              v.controls = true;
-              v.preload = 'metadata';
-              v.src = 'dev/shots/' + encodeURIComponent(s.name);
-              d.appendChild(v);
-            } else {
-              var im = document.createElement('img');
-              im.loading = 'lazy';
-              im.alt = s.name;
-              im.src = 'dev/shots/' + encodeURIComponent(s.name);
-              d.appendChild(im);
-            }
+        byDay[day].forEach(function (s) {
+          var d = document.createElement('div');
+          d.className = 'shot';
+          if (s.kind === 'video') {
+            var v = document.createElement('video');
+            v.controls = true;
+            v.preload = 'metadata';
+            v.src = 'dev/shots/' + encodeURIComponent(s.name);
+            d.appendChild(v);
+          } else if (s.kind === 'file') {
+            var fim = document.createElement('img');
+            fim.loading = 'lazy';
+            fim.alt = s.name;
+            fim.src = 'dev/shots/' + encodeURIComponent(s.name) + '/thumb';
+            fim.onerror = function () { fim.style.display = 'none'; };
+            d.appendChild(fim);
+            var fa = document.createElement('a');
+            fa.href = 'dev/shots/' + encodeURIComponent(s.name);
+            fa.textContent = 'Download ' + s.name;
+            d.appendChild(fa);
+          } else {
+            var im = document.createElement('img');
+            im.loading = 'lazy';
+            im.alt = s.name;
+            im.src = 'dev/shots/' + encodeURIComponent(s.name);
+            d.appendChild(im);
+          }
           var tm = document.createElement('div');
           tm.className = 'tm';
-          tm.textContent = s.time + (s.kind === 'video' ? ' ▶' : '');
+          tm.textContent = s.time + ' ';
+          var badge = document.createElement('span');
+          badge.className = 'src';
+          badge.textContent = kindBadge(s.kind);
+          tm.appendChild(badge);
           d.appendChild(tm);
           d.onclick = (function (name, el) {
             return function () {
@@ -186,74 +292,64 @@ function loadShots(day) {
 }
 document.getElementById('save').onclick = function () {
   msgEl.hidden = true;
+  errEl.hidden = true;
   getJSON('dev/' + UID + '/snapshot?save=1', 15000).then(
     function (j) {
-      say('Saved ' + j.saved);
-      loadShots(todayStr);
+      say('Saved shot ' + j.saved + ' on Raspberry Pi');
+      loadShots(null);
     },
     function (e) { fail('Save failed: ' + String((e && e.message) || e)); });
 };
-document.getElementById('reload-live').onclick = watchLive;
-(function initPad() {
-  var pad = document.getElementById('pad');
-  var timer = null;
-  function press(dir, btn) {
-    if (btn) { btn.classList.add('on'); }
-    fetch('dev/' + UID + '/ptz?dir=' + dir + '&ms=400', { method: 'POST', cache: 'no-store' })
-      .then(function (r) {
-        if (!r.ok) { throw new Error('HTTP ' + r.status); }
-        return r.json();
-      })
-      .catch(function (e) { fail('PTZ failed: ' + String((e && e.message) || e)); });
-  }
-  function release(btn) {
-    if (btn) { btn.classList.remove('on'); }
-    if (timer) { clearInterval(timer); timer = null; }
-  }
-  pad.querySelectorAll('button').forEach(function (btn) {
-    var dir = btn.getAttribute('data-dir');
-    btn.addEventListener('pointerdown', function (ev) {
-      ev.preventDefault();
-      press(dir, btn);
-      if (dir !== '0') {
-        timer = setInterval(function () { press(dir, null); }, 500);
-      }
-    });
-    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) {
-      btn.addEventListener(ev, function () { release(btn); });
-    });
-  });
-})();
 document.getElementById('record').onclick = function () {
-  say('Recording 10s clip (live pauses)…');
-  var liveSrc = liveEl.getAttribute('src');
+  var cd = document.getElementById('countdown');
+  var arc = document.getElementById('cd-arc');
+  var num = document.getElementById('cd-num');
   liveEl.removeAttribute('src');
-  function resume() {
-    liveEl.setAttribute('src', liveSrc);
+  liveEl.hidden = true;
+  cd.hidden = false;
+  var total = 10;
+  var left = total;
+  function draw() {
+    num.textContent = left;
+    arc.style.strokeDashoffset = (326.7 * (1 - left / total)).toFixed(1);
   }
+  draw();
+  var tick = setInterval(function () {
+    left -= 1;
+    if (left <= 0) { clearInterval(tick); }
+    else { draw(); }
+  }, 1000);
+  function finish() {
+    clearInterval(tick);
+    cd.hidden = true;
+    liveEl.hidden = false;
+    watchLive();
+  }
+  say('Recording 10s clip…');
   fetch('dev/' + UID + '/clip?seconds=10', { method: 'POST', cache: 'no-store' })
     .then(function (r) {
       if (!r.ok) { throw new Error('HTTP ' + r.status); }
       return r.json();
     })
     .then(function (j) {
-      say('Saved clip ' + j.clip);
-      loadShots(todayStr);
-      resume();
+      say('Saved clip ' + j.clip + ' on Raspberry Pi');
+      loadShots(null);
+      finish();
     })
     .catch(function (e) {
       fail('Record failed: ' + String((e && e.message) || e));
-      resume();
+      finish();
     });
 };
+document.getElementById('reload-live').onclick = watchLive;
 document.getElementById('del').onclick = function () {
   var names = Object.keys(selected);
   if (!names.length) { say('Nothing selected.'); return; }
-  if (!window.confirm('Delete ' + names.length + ' shot(s)?')) { return; }
+  if (!window.confirm('Delete ' + names.length + ' item(s) from the Pi?')) { return; }
   Promise.all(names.map(function (n) {
     return fetch('dev/shots/' + encodeURIComponent(n), { method: 'DELETE' });
   })).then(
-    function () { loadShots(todayStr); say('Deleted ' + names.length + '.'); },
+    function () { loadShots(null); say('Deleted ' + names.length + '.'); },
     function (e) { fail('Delete failed: ' + String((e && e.message) || e)); });
 };
 document.getElementById('dl').onclick = function () {
@@ -276,16 +372,180 @@ chipsEl.onclick = function (ev) {
   b.classList.add('on');
   loadShots(b.getAttribute('data-day') || null);
 };
+(function initPad() {
+  var pad = document.getElementById('pad');
+  var timer = null;
+  function press(dir, btn, ms) {
+    if (btn) { btn.classList.add('on'); }
+    fetch('dev/' + UID + '/ptz?dir=' + dir + '&ms=' + (ms || 400),
+      { method: 'POST', cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+        return r.json();
+      })
+      .catch(function (e) { fail('PTZ failed: ' + String((e && e.message) || e)); });
+  }
+  function release(btn) {
+    if (btn) { btn.classList.remove('on'); }
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+  pad.querySelectorAll('button').forEach(function (btn) {
+    var dir = btn.getAttribute('data-dir');
+    btn.addEventListener('pointerdown', function (ev) {
+      ev.preventDefault();
+      press(dir, btn, dir === '0' ? 80 : 400);
+      if (dir !== '0') {
+        timer = setInterval(function () { press(dir, null, 400); }, 500);
+      }
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) {
+      btn.addEventListener(ev, function () { release(btn); });
+    });
+  });
+})();
+var sdDates = [];
+var calYear = nowD.getFullYear();
+var calMonth = nowD.getMonth();
+var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December'];
+function renderCal() {
+  var cal = document.getElementById('cal');
+  var box = document.getElementById('dayclips');
+  var present = {};
+  sdDates.forEach(function (d) {
+    if (String(d).substr(0, 6) === '' + calYear + pad(calMonth + 1)) {
+      present[parseInt(String(d).substr(6, 2), 10)] = String(d);
+    }
+  });
+  document.getElementById('mtitle').textContent = MONTHS[calMonth] + ' ' + calYear;
+  cal.textContent = '';
+  ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d) {
+    var h = document.createElement('div');
+    h.className = 'hd';
+    h.textContent = d;
+    cal.appendChild(h);
+  });
+  var first = (new Date(calYear, calMonth, 1).getDay() + 6) % 7;
+  for (var i = 0; i < first; i++) { cal.appendChild(document.createElement('span')); }
+  var dim = new Date(calYear, calMonth + 1, 0).getDate();
+  for (var day = 1; day <= dim; day++) {
+    (function (dd) {
+      var b = document.createElement('button');
+      b.textContent = dd;
+      if (!present[dd]) { b.className = 'off'; }
+      else {
+        b.className = 'has';
+        b.onclick = function () {
+          var btns = cal.querySelectorAll('button');
+          for (var k = 0; k < btns.length; k++) { btns[k].classList.remove('sel'); }
+          b.classList.add('sel');
+          loadSdDay(present[dd], b);
+        };
+      }
+      cal.appendChild(b);
+    })(day);
+  }
+  box.textContent = '';
+}
+function sdFail(t) {
+  var e = document.getElementById('sd-error');
+  e.textContent = t;
+  e.hidden = false;
+}
+function sdClear() {
+  var e = document.getElementById('sd-error');
+  e.hidden = true;
+}
+function loadSdDay(date, btn) {
+  sdClear();
+  pauseLiveForSD();
+  if (btn) { btn.disabled = true; }
+  var done = function () { if (btn) { btn.disabled = false; } };
+  var box = document.getElementById('dayclips');
+  getJSON('dev/sd/files?date=' + date, 45000).then(
+    function (j) {
+      done();
+      box.textContent = '';
+      (j.files || []).forEach(function (f) {
+        var hh = pad(f.hours);
+        var mm = pad(f.minute);
+        var r = document.createElement('div');
+        r.className = 'row';
+        var s = document.createElement('span');
+        s.textContent = hh + ':' + mm;
+        r.appendChild(s);
+        var b = document.createElement('button');
+        b.textContent = 'Download to Pi';
+        b.onclick = function () {
+          b.disabled = true;
+          b.textContent = 'Downloading…';
+          fetch('dev/sd/download?date=' + date + '&hours=' + f.hours +
+            '&minute=' + f.minute, { method: 'POST', cache: 'no-store' })
+            .then(function (rr) {
+              if (!rr.ok) {
+                return rr.text().then(function (t) {
+                  throw new Error('HTTP ' + rr.status + ' ' + t);
+                });
+              }
+              return rr.json();
+            })
+            .then(function (jj) {
+              say('Saved ' + jj.file + ' (' + jj.bytes + 'B)');
+              loadShots(null);
+              b.textContent = 'Downloaded';
+            })
+            .catch(function (e) {
+              fail('SD download failed: ' + String((e && e.message) || e));
+              b.disabled = false;
+              b.textContent = 'Download to Pi';
+            });
+        };
+        r.appendChild(b);
+        box.appendChild(r);
+      });
+      if (!box.hasChildNodes()) { box.textContent = 'No files that day.'; }
+      done();
+    },
+    function (e) {
+      done();
+      sdFail('SD list failed: ' + String((e && e.message) || e) + ' — close other camera tabs/devices, then retry the day.');
+    });
+}
+function pauseLiveForSD() {
+  var live = document.getElementById('live');
+  if (live) { live.removeAttribute('src'); }
+}
+document.getElementById('mprev').onclick = function () {
+  calMonth -= 1;
+  if (calMonth < 0) { calMonth = 11; calYear -= 1; }
+  renderCal();
+};
+document.getElementById('mnext').onclick = function () {
+  calMonth += 1;
+  if (calMonth > 11) { calMonth = 0; calYear += 1; }
+  renderCal();
+};
 getJSON('dev/list', 8000).then(
   function (cams) {
     var found = Array.isArray(cams) && cams.some(function (c) { return c.uid === UID; });
     setLive(found);
+    return getJSON('dev/sd/dates', 15000).then(
+      function (j) { sdDates = j.dates || []; sdClear(); },
+      function (e) {
+        sdDates = [];
+        sdFail('SD dates failed: ' + String((e && e.message) || e) +
+          ' — Reload live, then reopen this tab.');
+      }).then(function () { return found; });
+  }).then(
+  function (found) {
+    renderCal();
     if (found) { watchLive(); } else { fail('Camera not registered.'); }
-    loadShots(todayStr);
+    loadShots(null);
     setInterval(pollState, 10000);
   },
   function (e) {
     setLive(false);
+    renderCal();
     fail('Offline: ' + String((e && e.name === 'AbortError') ? 'timeout' : ((e && e.message) || e)));
     setInterval(pollState, 10000);
   });

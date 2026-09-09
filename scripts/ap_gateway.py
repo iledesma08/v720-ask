@@ -38,6 +38,26 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
 SNAP_DIR = os.environ.get(
     "SNAP_DIR", os.path.join(os.path.dirname(__file__), "..", "snapshots"))
 _cam_lock = threading.Lock()
+# Who holds _cam_lock since when (diagnosis for 503s).
+_cam_holder = {"what": None, "since": 0.0}
+
+
+def _cam_acquire(what: str) -> bool:
+    ok = _cam_lock.acquire(blocking=False)
+    if ok:
+        import time as _time
+
+        _cam_holder["what"] = what
+        _cam_holder["since"] = _time.monotonic()
+    return ok
+
+
+def _cam_release() -> None:
+    _cam_holder["what"] = None
+    try:
+        _cam_lock.release()
+    except RuntimeError:
+        pass
 
 # Serializes all writes on a shared live socket (605 confirms vs PTZ).
 _send_lock = threading.Lock()
@@ -63,13 +83,113 @@ _latest_lock = threading.Lock()
 _latest_img: bytes | None = None
 _latest_ts = 0.0
 LATEST_MAX_AGE = 3.0
+# G.711 audio chunks (stripped) published by the reader for clip muxing.
+_audio_lock = threading.Lock()
+_audio_chunks: list = []
+
+
+def _sd_call(fn):
+    """Run fn(v720_ap) on a dedicated SD session.
+
+    Waits briefly for transient holders (snapshot/PTZ); a running live
+    viewer holds the lock indefinitely, so callers must pause it first.
+    Returns None when busy/failing.
+    """
+    import time as _time
+
+    from v720_ap import v720_ap
+
+    for _ in range(20):
+        if _cam_acquire("sd"):
+            break
+        _time.sleep(0.5)
+    else:
+        return None
+    try:
+        sock = _open_cam(*CAMERA)
+        try:
+            return fn(v720_ap(sock))
+        finally:
+            _close_cam(sock)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        _cam_release()
+
+
+def _prune_snapshots(days: float) -> int:
+    """Delete SNAP_DIR files older than `days`. Returns count removed."""
+    import time as _time
+
+    if days <= 0:
+        return 0
+    cutoff = _time.time() - days * 86400.0
+    removed = 0
+    try:
+        names = os.listdir(SNAP_DIR)
+    except OSError:
+        return 0
+    for name in names:
+        if not _shot_name_ok(name) and not name.endswith(".avi"):
+            continue
+        path = os.path.join(SNAP_DIR, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _retention_worker(days: float) -> None:
+    import time as _time
+
+    while True:
+        _time.sleep(6 * 3600.0)
+        try:
+            _prune_snapshots(days)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _shot_thumb(name: str):
+    """First frame of an AVI as JPEG bytes, cached next to it. None if off."""
+    import cv2 as _cv2
+
+    if not name.endswith(".avi") or not _shot_name_ok(name):
+        return None
+    path = os.path.join(SNAP_DIR, name)
+    thumb = path + ".thumb.jpg"
+    if os.path.exists(thumb):
+        try:
+            with open(thumb, "rb") as fh:
+                return fh.read()
+        except OSError:
+            return None
+    v = _cv2.VideoCapture(path)
+    try:
+        ok, frame = v.read()
+    finally:
+        v.release()
+    if not ok or frame is None:
+        return None
+    ok, buf = _cv2.imencode(".jpg", frame)
+    if not ok:
+        return None
+    try:
+        with open(thumb, "wb") as fh:
+            fh.write(bytes(buf))
+    except OSError:
+        pass
+    return bytes(buf)
 
 
 def _shot_name_ok(name: str) -> bool:
     """Allow only our own snapshot/clip file names (no traversal)."""
     import re
 
-    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(jpg|mp4)",
+    return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(jpg|mp4|avi)",
                         name or "") is not None
 
 
@@ -83,22 +203,24 @@ def _list_shots(day: str | None = None) -> list:
     except OSError:
         return out
     for name in sorted(names, reverse=True):
-        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+)?\.(jpg|mp4)",
+        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part)?\.(jpg|mp4|avi)",
                           name)
         if not m:
             continue
         if day and m.group(1) != day:
             continue
         t = m.group(2)
+        ext = m.group(4)
         out.append({"name": name, "day": m.group(1),
                     "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}",
-                    "kind": "video" if m.group(4) == "mp4" else "shot"})
+                    "kind": "video" if ext == "mp4" else
+                            "file" if ext == "avi" else "shot"})
     return out
 
 
 def _grab_frame():
     """Single capture attempt, None when busy/failing. For periodic worker."""
-    if not _cam_lock.acquire(blocking=False):
+    if not _cam_acquire("periodic"):
         return None
     try:
         sock = _open_cam(*CAMERA)
@@ -110,7 +232,7 @@ def _grab_frame():
     except Exception:  # noqa: BLE001
         return None
     finally:
-        _cam_lock.release()
+        _cam_release()
 
 
 def _periodic_worker(interval: float):
@@ -180,27 +302,47 @@ def _record_clip(seconds: float):
     tmp = os.path.join(SNAP_DIR, ".part-" + name)  # keep .mp4 suffix
     elapsed = _time.monotonic() - t0
     fps = min(max(len(dec) / max(elapsed, 0.1), 1.0), 15.0)
-    if not _mux_ffmpeg(dec, tmp, w, h, fps):
+    with _audio_lock:
+        audio = b"".join(_audio_chunks)
+        del _audio_chunks[:]
+    if not _mux_ffmpeg(dec, tmp, w, h, fps, audio or None):
         _mux_cv2(dec, tmp, w, h)
     os.rename(tmp, path)
     return name
 
 
-def _mux_ffmpeg(dec, tmp, w, h, fps) -> bool:
-    """H.264 mp4 via ffmpeg pipe (plays inline in browsers)."""
+def _mux_ffmpeg(dec, tmp, w, h, fps, audio=None) -> bool:
+    """H.264 mp4 via ffmpeg pipe (plays inline in browsers).
+
+    Audio is G.711 A-law 8 kHz mono when the camera pushed any.
+    """
     import shutil
     import subprocess
+    import tempfile
 
     if shutil.which("ffmpeg") is None:
         return False
+    cmd = ["ffmpeg", "-y", "-v", "error",
+           "-f", "rawvideo", "-pix_fmt", "bgr24",
+           "-s", f"{w}x{h}", "-r", f"{fps:.2f}", "-i", "-"]
+    audio_tmp = None
+    if audio:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pcm",
+                                             delete=False) as af:
+                af.write(audio)
+                audio_tmp = af.name
+            cmd += ["-f", "s16le", "-ar", "8000", "-ac", "1",
+                    "-i", audio_tmp]
+        except OSError:
+            audio_tmp = None
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart"]
+    if audio_tmp is not None:
+        cmd += ["-c:a", "aac", "-shortest"]
+    cmd.append(tmp)
     try:
-        proc = subprocess.Popen(
-            ["ffmpeg", "-y", "-v", "error",
-             "-f", "rawvideo", "-pix_fmt", "bgr24",
-             "-s", f"{w}x{h}", "-r", f"{fps:.2f}", "-i", "-",
-             "-c:v", "libx264", "-pix_fmt", "yuv420p",
-             "-movflags", "+faststart", tmp],
-            stdin=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     except OSError:
         return False
     try:
@@ -208,13 +350,20 @@ def _mux_ffmpeg(dec, tmp, w, h, fps) -> bool:
             if d.shape[:2] == (h, w):
                 proc.stdin.write(d.tobytes())
         proc.stdin.close()
-        return proc.wait(timeout=30) == 0 and os.path.exists(tmp)
+        ok = proc.wait(timeout=30) == 0 and os.path.exists(tmp)
     except (OSError, ValueError):
         try:
             proc.kill()
         except OSError:
             pass
-        return False
+        ok = False
+    finally:
+        if audio_tmp is not None:
+            try:
+                os.unlink(audio_tmp)
+            except OSError:
+                pass
+    return ok
 
 
 def _mux_cv2(dec, tmp, w, h) -> None:
@@ -419,6 +568,8 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
         pending = []
         last_confirm = _time.monotonic()
         sock._socket.settimeout(5)
+        with _audio_lock:
+            del _audio_chunks[:]
         while not stop_flag.is_set():
             try:
                 raw = sock.recv()
@@ -445,6 +596,16 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
                          cmd_udp.P2P_UDP_CMD_G711,
                          cmd_udp.P2P_UDP_CMD_AVI):
                 pending.append(p._pkg_id)
+            if p.cmd == cmd_udp.P2P_UDP_CMD_G711 and \
+                    p.msg_flag == cmd_udp.PROTOCOL_MSG_FLAG_FINISH:
+                with _audio_lock:
+                    _audio_chunks.append(bytes(p.payload[:-5]))
+                continue
+            if p.cmd == cmd_udp.P2P_UDP_CMD_PCM:
+                # This camera pushes audio as raw PCM frames, not G711.
+                with _audio_lock:
+                    _audio_chunks.append(bytes(p.payload))
+                continue
             if p.cmd != cmd_udp.P2P_UDP_CMD_JPEG:
                 continue
             data = bytes(p.payload)
@@ -516,8 +677,14 @@ class Handler(BaseHTTPRequestHandler):
                        [("Connection", "close"), ("Cache-Control", "no-store")])
             self.wfile.write(body)
         elif route == "/dev/list":
+            import time as _time
+
+            busy = _cam_holder["what"]
             body = json.dumps(
-                [{"uid": UID, "host": CAMERA[0], "port": CAMERA[1]}]
+                [{"uid": UID, "host": CAMERA[0], "port": CAMERA[1],
+                  "busy": busy,
+                  "busy_secs": round(_time.monotonic() - _cam_holder["since"])
+                  if busy else 0}]
             ).encode()
             self._send(200, "application/json", len(body),
                        [("Connection", "close")])
@@ -526,6 +693,38 @@ class Handler(BaseHTTPRequestHandler):
             self._snapshot()
         elif route == f"/dev/{UID}/live":
             self._live()
+        elif route == "/dev/sd/dates":
+            dates = _sd_call(lambda cam: cam.sdcard_datelist())
+            if dates is None:
+                self._send(503, "text/plain", 11,
+                           [("Connection", "close")])
+                self.wfile.write(b"camera busy")
+                return
+            body = json.dumps({"dates": dates or []}).encode()
+            self._send(200, "application/json", len(body),
+                       [("Connection", "close")])
+            self.wfile.write(body)
+        elif route == "/dev/sd/files":
+            query = parse_qs(parts.query)
+            date = query.get("date", [None])[0]
+            if not date or not date.isdigit():
+                self._send(400, "text/plain", 8,
+                           [("Connection", "close")])
+                self.wfile.write(b"bad date")
+                return
+            files = _sd_call(
+                lambda cam, _d=int(date): [
+                    {"hours": h, "minute": m}
+                    for (h, m) in (cam.filename_list(_d) or [])])
+            if files is None:
+                self._send(503, "text/plain", 11,
+                           [("Connection", "close")])
+                self.wfile.write(b"camera busy")
+                return
+            body = json.dumps({"date": date, "files": files}).encode()
+            self._send(200, "application/json", len(body),
+                       [("Connection", "close")])
+            self.wfile.write(body)
         elif route == "/dev/shots":
             query = parse_qs(parts.query)
             body = json.dumps(
@@ -535,6 +734,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif route.startswith("/dev/shots/"):
             name = route[len("/dev/shots/"):]
+            if name.endswith("/thumb"):
+                img = _shot_thumb(name[:-len("/thumb")])
+                if img is None:
+                    self._send(404, "text/plain", 9,
+                               [("Connection", "close")])
+                    self.wfile.write(b"not found")
+                    return
+                self._send(200, "image/jpeg", len(img),
+                           [("Connection", "close")])
+                self.wfile.write(img)
+                return
             if not _shot_name_ok(name):
                 self._send(400, "text/plain", 11,
                            [("Connection", "close")])
@@ -548,8 +758,9 @@ class Handler(BaseHTTPRequestHandler):
                            [("Connection", "close")])
                 self.wfile.write(b"not found")
                 return
-            ctype = ("video/mp4" if name.endswith(".mp4")
-                     else "image/jpeg")
+            ctype = ("video/mp4" if name.endswith(".mp4") else
+                     "video/x-msvideo" if name.endswith(".avi") else
+                     "image/jpeg")
             self._send(200, ctype, len(img),
                        [("Connection", "close")])
             self.wfile.write(img)
@@ -594,6 +805,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == f"/dev/{UID}/ptz":
             self._ptz(query)
             return
+        if route == "/dev/sd/download":
+            self._sd_download(query)
+            return
         if route != f"/dev/{UID}/clip":
             self._send(404, "text/plain", 9,
                        [("Connection", "close")])
@@ -610,7 +824,7 @@ class Handler(BaseHTTPRequestHandler):
         for _ in range(20):
             # The page pauses its own live feed first; give the previous
             # session a moment to notice the closed socket and release.
-            if _cam_lock.acquire(blocking=False):
+            if _cam_acquire("clip"):
                 acquired = True
                 break
             _time.sleep(0.5)
@@ -632,13 +846,68 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(str(exc).encode())
             return
         finally:
-            _cam_lock.release()
+            _cam_release()
         if name is None:
             self._send(502, "text/plain", 17,
                        [("Connection", "close")])
             self.wfile.write(b"no frames in time")
             return
         body = json.dumps({"clip": name, "seconds": seconds}).encode()
+        self._send(200, "application/json", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
+
+    def _sd_download(self, query) -> None:
+        """Download one SD minute-file to the Pi (pauses camera recording
+        while transferring, per firmware behavior)."""
+        try:
+            date = int(query.get("date", ["0"])[0])
+            hours = int(query.get("hours", ["-1"])[0])
+            minute = int(query.get("minute", ["-1"])[0])
+        except ValueError:
+            date, hours, minute = 0, -1, -1
+        if date <= 0 or not 0 <= hours <= 23 or not 0 <= minute <= 59:
+            self._send(400, "text/plain", 11,
+                       [("Connection", "close")])
+            self.wfile.write(b"bad params")
+            return
+
+        def _fetch(cam):
+            info = cam.avi_file_info(date, hours, minute) or {}
+            want = info.get("fileSize", -1)
+            info_data, data = cam.get_file(date, hours, minute) or (None, None)
+            if data is None:
+                return ("error", "empty transfer", 0, want)
+            base = f"{UID}-sd-{date:08d}-{hours:02d}{minute:02d}00"
+            if want and want > 0 and len(data) < want:
+                if len(data) < 262144:
+                    # Too short to be useful: report, don't keep a stub.
+                    return ("short", len(data), want)
+                name = base + "-part.avi"  # firmware wall ~1MB, keep prefix
+            else:
+                name = base + ".avi"
+            path = os.path.join(SNAP_DIR, name)
+            os.makedirs(SNAP_DIR, exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(data)
+            return {"file": name, "bytes": len(data)}
+
+        res = _sd_call(_fetch)
+        if res is None:
+            self._send(503, "text/plain", 11,
+                       [("Connection", "close")])
+            self.wfile.write(b"camera busy")
+            return
+        if isinstance(res, tuple):
+            kind, got, want = res[0], res[1], res[2] if len(res) > 2 else -1
+            msg = (f"camera sent {got} of {want} bytes; "
+                   f"retry once the live feed is fully stopped"
+                   if kind == "short" else f"transfer error: {got}")
+            self._send(502, "text/plain", len(msg),
+                       [("Connection", "close")])
+            self.wfile.write(msg.encode())
+            return
+        body = json.dumps(res).encode()
         self._send(200, "application/json", len(body),
                    [("Connection", "close")])
         self.wfile.write(body)
@@ -714,7 +983,7 @@ class Handler(BaseHTTPRequestHandler):
                            [("Connection", "close")])
                 self.wfile.write(body)
                 return
-        if not _cam_lock.acquire(blocking=False):
+        if not _cam_acquire("ptz"):
             self._send(503, "text/plain", 11,
                        [("Connection", "close")])
             self.wfile.write(b"camera busy")
@@ -731,7 +1000,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(str(exc).encode())
             return
         finally:
-            _cam_lock.release()
+            _cam_release()
         body = json.dumps({"moved": direction, "ms": ms,
                            "via": "direct"}).encode()
         self._send(200, "application/json", len(body),
@@ -750,7 +1019,7 @@ class Handler(BaseHTTPRequestHandler):
                    else None)
         if img is not None:
             return self._serve_snapshot(img, save)
-        if not _cam_lock.acquire(blocking=False):
+        if not _cam_acquire("snapshot"):
             self._send(503, "text/plain", 11,
                        [("Connection", "close")])
             self.wfile.write(b"camera busy")
@@ -791,7 +1060,7 @@ class Handler(BaseHTTPRequestHandler):
                        [("Connection", "close")])
             self.wfile.write(str(exc).encode())
         finally:
-            _cam_lock.release()
+            _cam_release()
 
     def _serve_snapshot(self, img: bytes, save: bool):
         if save:
@@ -806,7 +1075,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(img)
 
     def _live(self):
-        if not _cam_lock.acquire(blocking=False):
+        if not _cam_acquire("live"):
             self._send(503, "text/plain", 11,
                        [("Connection", "close")])
             self.wfile.write(b"camera busy")
@@ -904,7 +1173,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:  # noqa: BLE001
                     pass
             _live_register(None)
-            _cam_lock.release()
+            _cam_release()
 
 
 def main() -> int:
@@ -915,6 +1184,9 @@ def main() -> int:
     ap.add_argument("--snap-every", type=float,
                     default=float(os.environ.get("SNAP_EVERY_SEC", "0")),
                     help="periodic snapshot interval in seconds, 0 disables")
+    ap.add_argument("--retain-days", type=float,
+                    default=float(os.environ.get("SNAP_RETENTION_DAYS", "0")),
+                    help="delete local snapshots/clips older than N days, 0 disables")
     args = ap.parse_args()
     log.set_log_lvl(logging.WARN)
 
@@ -927,6 +1199,12 @@ def main() -> int:
                               args=(args.snap_every,), daemon=True)
         th.start()
         print(f"periodic snapshots every {args.snap_every}s into {SNAP_DIR}")
+    if args.retain_days > 0:
+        n = _prune_snapshots(args.retain_days)
+        print(f"retention: removed {n} files older than {args.retain_days}d")
+        th = threading.Thread(target=_retention_worker,
+                              args=(args.retain_days,), daemon=True)
+        th.start()
 
     srv = ThreadingHTTPServer((args.listen, args.port), Handler)
     print(f"serving {UID} {CAMERA[0]}:{CAMERA[1]} on "

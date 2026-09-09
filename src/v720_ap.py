@@ -22,11 +22,20 @@ class v720_ap:
     def _req(self, data) -> bytes:
         return self._socket.request(data)
 
-    def _rcv_video_frame(self, on_pkg_recv: callable) -> None:
+    def _rcv_video_frame(self, on_pkg_recv: callable,
+                           confirm: bool = False) -> None:
+        """Receive stream packets until end/timeout.
+
+        With confirm=True, sends P2P_UDP_CMD_RETRANSMISSION_CONFIRM (605)
+        with received pkg_ids every 100 ms — required or the camera stops
+        pushing mid-transfer (seen on live and on file downloads).
+        """
         heartbeat_cnt = 0
         import time
         last_heartbeat = time.time()
         heartbeat_interval = 5
+        pending = []
+        last_confirm = time.time()
         while True:
             try:
                 current_time = time.time()
@@ -39,6 +48,8 @@ class v720_ap:
                 if _bf is not None and len(_bf) > 0:
                     pkg = prot_udp.resp(_bf)
                     if pkg is not None:
+                        if confirm:
+                            pending.append(pkg._pkg_id)
                         if on_pkg_recv is not None and callable(on_pkg_recv):
                             on_pkg_recv(pkg)
 
@@ -46,6 +57,19 @@ class v720_ap:
                 else:
                     # print('--- bf is none')
                     break
+                if confirm and current_time - last_confirm >= 0.1:
+                    payload = bytearray()
+                    for pid in pending:
+                        payload.extend(int.to_bytes(pid, 4, 'little'))
+                    pending.clear()
+                    try:
+                        self._socket.send(prot_udp(
+                            payload=payload,
+                            cmd=cmd_udp.P2P_UDP_CMD_RETRANSMISSION_CONFIRM,
+                        ).req())
+                    except (OSError, IOError):
+                        break
+                    last_confirm = current_time
             except timeout as ex:
                 # print('--- timeout: ', ex)
                 break
@@ -269,7 +293,7 @@ class v720_ap:
 
                 ret.extend(pkg.payload)
 
-            self._rcv_video_frame(on_rcv)
+            self._rcv_video_frame(on_rcv, confirm=True)
             return (r.json, ret)
 
         return (r.json, None) if r is not None else None
