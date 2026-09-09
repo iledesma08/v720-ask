@@ -5,3 +5,7 @@
 *.mjpg
 *.pcap
 nohup.out
+# Runtime data, never commit.
+snapshots/
+.venv/
+*.pyc
