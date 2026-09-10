@@ -13,6 +13,9 @@ services:
       - SNAP_DIR=/data/snapshots
       # Periodic snapshots, seconds between captures (0 disables).
       # - SNAP_EVERY_SEC=300
+      # Event capture: grab every N sec, keep motion+faces only.
+      # Skips while the camera is busy (never fights live viewing).
+      - FACE_WATCH_SEC=20
       # Local retention, days to keep snapshots/clips (0 disables).
       # - SNAP_RETENTION_DAYS=7
     volumes:
