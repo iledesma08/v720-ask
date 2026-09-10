@@ -114,7 +114,7 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
   <p class="error" id="error" hidden></p>
   <div class="chips" id="chips"><button data-day="" class="on">Today</button></div>
   <div class="chips" id="tools">
-    <button data-f="all" class="on">All</button><button data-f="face">persona</button><button data-f="video">clips</button><button data-f="shot">shots</button><button data-f="file">sd</button>
+    <button data-f="all" class="on">All</button><button data-f="face">persona</button><button data-f="manual">manual</button><button data-f="automatic">automatic</button><button data-f="video">clips</button><button data-f="shot">shots</button><button data-f="file">sd</button>
     <select id="sort" aria-label="Sort">
       <option value="new">Newest</option>
       <option value="old">Oldest</option>
@@ -229,8 +229,12 @@ liveEl.addEventListener('error', function () {
     document.getElementById(v).classList.add('on');
     if (v === 'v-cam') { watchLive(); } else { pauseLive(); }
   }
-function kindBadge(kind) {
-  return kind === 'video' ? 'clip' : (kind === 'file' ? 'sd' : 'shot');
+function kindBadge(s) {
+  if (s.face) { return 'person-shot'; }
+  if (s.kind === 'video') { return 'clip'; }
+  if (s.kind === 'file') { return 'sd'; }
+  if (s.src === 'auto') { return 'automatic-shot'; }
+  return 'manual-shot';
 }
 function loadShots(day) {
   getJSON('dev/shots' + (day ? '?day=' + day : ''), 8000).then(
@@ -245,6 +249,12 @@ function filterShots(shots) {
   var out = (shots || []).filter(function (s) {
     if (shotFilter === 'face') { return !!s.face; }
     if (shotFilter === 'all') { return true; }
+    if (shotFilter === 'manual') {
+      return s.kind === 'shot' && s.src !== 'auto' && !s.face;
+    }
+    if (shotFilter === 'automatic') {
+      return s.src === 'auto' && !s.face;
+    }
     return s.kind === shotFilter;
   });
   function key(s) { return s.day + s.time.replace(/:/g, ''); }
@@ -304,7 +314,7 @@ function renderShots(shots) {
           tm.textContent = s.time + ' ';
           var badge = document.createElement('span');
           badge.className = 'src';
-          badge.textContent = kindBadge(s.kind) + (s.face ? ' · persona' : '');
+          badge.textContent = kindBadge(s);
           tm.appendChild(badge);
           d.appendChild(tm);
           d.onclick = (function (name, el) {
