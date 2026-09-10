@@ -79,7 +79,8 @@ with a live MJPEG `<img>` + *Watch live* and *Snapshot* links.
 - `GET /dev/settings` reads, `POST /dev/settings` validates + persists to
   `snapshots/settings.json` (same volume, survives restarts).
 - Keys: `facewatch_enabled` (bool), `facewatch_interval_sec` (2–300),
-  `motion_thresh` (1–100), `night_ir_mode` (off/on/auto; auto stored only).
+  `motion_thresh` (1–100), `night_ir_mode` (off/on; the camera's On is
+  already automatic).
 - The facewatch worker re-reads the file every loop — no restart needed.
 - Saving `night_ir_mode` on/off also drives the IR LED immediately
   (`POST /dev/ap-camera/ir?on=0|1`, #28 phase 1).

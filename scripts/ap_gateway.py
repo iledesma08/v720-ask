@@ -74,7 +74,7 @@ def _load_settings():
         th = out["motion_thresh"]
     out["motion_thresh"] = min(max(th, 1.0), 100.0)
     mode = data.get("night_ir_mode", out["night_ir_mode"])
-    out["night_ir_mode"] = mode if mode in ("off", "on", "auto") else "off"
+    out["night_ir_mode"] = mode if mode in ("off", "on") else "off"
     return out
 
 
@@ -108,8 +108,8 @@ def _validate_settings(data):
             return None, "motion_thresh must be 1..100"
         cleaned["motion_thresh"] = th
     if "night_ir_mode" in data:
-        if data["night_ir_mode"] not in ("off", "on", "auto"):
-            return None, "night_ir_mode must be off/on/auto"
+        if data["night_ir_mode"] not in ("off", "on"):
+            return None, "night_ir_mode must be off/on"
         cleaned["night_ir_mode"] = data["night_ir_mode"]
     return cleaned, None
 
@@ -1287,8 +1287,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _ir(self, query) -> None:
-        """Toggle the IR LED: ?on=0|1. Phase 1 (#28) is manual only;
-        automatic mode is stored, not yet acted on.
+        """Toggle the IR LED: ?on=0|1. Manual only (#28 phase 1);
+        the camera's own ON behavior is already automatic.
         """
         global _live_sock
         from v720_ap import v720_ap
