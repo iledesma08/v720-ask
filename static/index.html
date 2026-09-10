@@ -38,6 +38,8 @@ main { max-width: 900px; margin: 0 auto; padding: 1rem; }
 .chips button { padding: .45rem .9rem; border-radius: 999px; border: 1px solid var(--line);
   background: var(--card); color: var(--mut); }
 .chips button.on { background: var(--acc); color: #fff; border-color: var(--acc); }
+.chips select { padding: .45rem .9rem; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--card); color: var(--txt); }
 h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; margin: 1.2rem 0 .5rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
 .shot { border-radius: 12px; overflow: hidden; background: #0a0c11; border: 1px solid var(--line); }
@@ -80,7 +82,7 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
 </header>
 <main>
 <noscript><p class="error">JavaScript is disabled or blocked for this site.</p></noscript>
-<p class="nota" id="build">build tabs-1</p>
+  <p class="nota" id="build" hidden></p>
 
 <section class="view on" id="v-cam">
   <div id="live-wrap"><img class="live" id="live" alt="Live feed"></div>
@@ -111,8 +113,18 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
   <p class="msg" id="msg" hidden></p>
   <p class="error" id="error" hidden></p>
   <div class="chips" id="chips"><button data-day="" class="on">Today</button></div>
+  <div class="chips" id="tools">
+    <button data-f="all" class="on">All</button><button data-f="face">persona</button><button data-f="video">clips</button><button data-f="shot">shots</button><button data-f="file">sd</button>
+    <select id="sort" aria-label="Sort">
+      <option value="new">Newest</option>
+      <option value="old">Oldest</option>
+      <option value="big">Largest</option>
+      <option value="small">Smallest</option>
+    </select>
+  </div>
   <div id="groups"></div>
   <div class="foot">
+    <button id="selall">Select all</button>
     <button id="dl">Download selected</button>
     <button id="del">Delete selected</button>
   </div>
@@ -223,6 +235,28 @@ function kindBadge(kind) {
 function loadShots(day) {
   getJSON('dev/shots' + (day ? '?day=' + day : ''), 8000).then(
     function (shots) {
+      renderShots(filterShots(shots));
+    },
+    function (e) { fail('Gallery: ' + String((e && e.message) || e)); });
+}
+var shotFilter = 'all';
+var shotSort = 'new';
+function filterShots(shots) {
+  var out = (shots || []).filter(function (s) {
+    if (shotFilter === 'face') { return !!s.face; }
+    if (shotFilter === 'all') { return true; }
+    return s.kind === shotFilter;
+  });
+  function key(s) { return s.day + s.time.replace(/:/g, ''); }
+  out.sort(function (a, b) {
+    if (shotSort === 'old') { return key(a) < key(b) ? -1 : 1; }
+    if (shotSort === 'big') { return (b.bytes || 0) - (a.bytes || 0); }
+    if (shotSort === 'small') { return (a.bytes || 0) - (b.bytes || 0); }
+    return key(a) < key(b) ? 1 : -1;
+  });
+  return out;
+}
+function renderShots(shots) {
       groupsEl.textContent = '';
       selected = {};
       var byDay = {};
@@ -240,6 +274,7 @@ function loadShots(day) {
         byDay[day].forEach(function (s) {
           var d = document.createElement('div');
           d.className = 'shot';
+          d.setAttribute('data-name', s.name);
           if (s.kind === 'video') {
             var v = document.createElement('video');
             v.controls = true;
@@ -269,7 +304,7 @@ function loadShots(day) {
           tm.textContent = s.time + ' ';
           var badge = document.createElement('span');
           badge.className = 'src';
-          badge.textContent = kindBadge(s.kind);
+          badge.textContent = kindBadge(s.kind) + (s.face ? ' · persona' : '');
           tm.appendChild(badge);
           d.appendChild(tm);
           d.onclick = (function (name, el) {
@@ -287,8 +322,6 @@ function loadShots(day) {
         });
         groupsEl.appendChild(g);
       });
-    },
-    function (e) { fail('Gallery: ' + String((e && e.message) || e)); });
 }
 document.getElementById('save').onclick = function () {
   msgEl.hidden = true;
@@ -352,6 +385,27 @@ document.getElementById('del').onclick = function () {
     function () { loadShots(null); say('Deleted ' + names.length + '.'); },
     function (e) { fail('Delete failed: ' + String((e && e.message) || e)); });
 };
+document.getElementById('selall').onclick = function () {
+  var cards = document.querySelectorAll('#groups .shot');
+  var allSel = cards.length > 0;
+  var i;
+  for (i = 0; i < cards.length; i++) {
+    if (!selected[cards[i].getAttribute('data-name')]) {
+      allSel = false;
+      break;
+    }
+  }
+  for (i = 0; i < cards.length; i++) {
+    var k = cards[i].getAttribute('data-name');
+    if (allSel) {
+      delete selected[k];
+      cards[i].classList.remove('sel');
+    } else {
+      selected[k] = true;
+      cards[i].classList.add('sel');
+    }
+  }
+};
 document.getElementById('dl').onclick = function () {
   var names = Object.keys(selected);
   if (!names.length) { say('Nothing selected.'); return; }
@@ -371,6 +425,19 @@ chipsEl.onclick = function (ev) {
   for (var i = 0; i < btns.length; i++) { btns[i].classList.remove('on'); }
   b.classList.add('on');
   loadShots(b.getAttribute('data-day') || null);
+};
+document.getElementById('tools').onclick = function (ev) {
+  var b = ev.target.closest ? ev.target.closest('button') : null;
+  if (!b) { return; }
+  var btns = this.querySelectorAll('button');
+  for (var i = 0; i < btns.length; i++) { btns[i].classList.remove('on'); }
+  b.classList.add('on');
+  shotFilter = b.getAttribute('data-f') || 'all';
+  loadShots();
+};
+document.getElementById('sort').onchange = function () {
+  shotSort = this.value;
+  loadShots();
 };
 (function initPad() {
   var pad = document.getElementById('pad');
