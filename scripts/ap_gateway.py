@@ -224,7 +224,7 @@ def _list_shots(day: str | None = None) -> list:
     except OSError:
         return out
     for name in sorted(names, reverse=True):
-        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part|-face)?\.(jpg|mp4|avi)",
+        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part|-face|-manual|-auto)?\.(jpg|mp4|avi)",
                           name)
         if not m:
             continue
@@ -237,11 +237,14 @@ def _list_shots(day: str | None = None) -> list:
             size = os.path.getsize(os.path.join(SNAP_DIR, name))
         except OSError:
             size = -1
+        src = "manual" if infix in ("-manual", "") and ext == "jpg" else \
+            "auto" if infix in ("-auto", "-face") else None
         out.append({"name": name, "day": m.group(1),
                     "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}",
                     "kind": "video" if ext == "mp4" else
                             "file" if ext == "avi" else "shot",
                     "face": infix == "-face",
+                    "src": src,
                     "bytes": size})
     return out
 
@@ -344,7 +347,7 @@ def _facewatch_worker(interval: float, motion_thresh: float = 10.0):
             prev = cur
             continue
         try:
-            name = _save_snapshot(img)
+            name = _save_snapshot(img, src="auto")
         except OSError:
             continue
         try:
@@ -373,7 +376,7 @@ def _periodic_worker(interval: float):
         if img is None:
             continue
         try:
-            name = _save_snapshot(img)
+            name = _save_snapshot(img, src="auto")
         except OSError:
             continue
         try:
@@ -518,13 +521,18 @@ def _mux_cv2(dec, tmp, w, h) -> None:
     vw.release()
 
 
-def _save_snapshot(img: bytes) -> str:
-    """Store img timestamped under SNAP_DIR, return the file name."""
+def _save_snapshot(img: bytes, src: str | None = None) -> str:
+    """Store img timestamped under SNAP_DIR, return the file name.
+
+    src tags the origin in the file name: manual (button), auto
+    (periodic worker), or None (legacy). Face hits get -face on rename.
+    """
     import datetime as _dt
 
     os.makedirs(SNAP_DIR, exist_ok=True)
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = f"{UID}-{stamp}.jpg"
+    infix = f"-{src}" if src in ("manual", "auto") else ""
+    name = f"{UID}-{stamp}{infix}.jpg"
     path = os.path.join(SNAP_DIR, name)
     n = 1
     while os.path.exists(path):
@@ -1203,7 +1211,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_snapshot(self, img: bytes, save: bool):
         if save:
-            name = _save_snapshot(img)
+            name = _save_snapshot(img, src="manual")
             body = json.dumps({"saved": name}).encode()
             self._send(200, "application/json", len(body),
                        [("Connection", "close")])
