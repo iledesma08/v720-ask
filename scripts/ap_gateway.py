@@ -224,7 +224,7 @@ def _list_shots(day: str | None = None) -> list:
     except OSError:
         return out
     for name in sorted(names, reverse=True):
-        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part)?\.(jpg|mp4|avi)",
+        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part|-face)?\.(jpg|mp4|avi)",
                           name)
         if not m:
             continue
@@ -232,10 +232,17 @@ def _list_shots(day: str | None = None) -> list:
             continue
         t = m.group(2)
         ext = m.group(4)
+        infix = m.group(3) or ""
+        try:
+            size = os.path.getsize(os.path.join(SNAP_DIR, name))
+        except OSError:
+            size = -1
         out.append({"name": name, "day": m.group(1),
                     "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}",
                     "kind": "video" if ext == "mp4" else
-                            "file" if ext == "avi" else "shot"})
+                            "file" if ext == "avi" else "shot",
+                    "face": infix == "-face",
+                    "bytes": size})
     return out
 
 
@@ -256,8 +263,105 @@ def _grab_frame():
         _cam_release()
 
 
+def _detect_faces(img: bytes):
+    """Face count via YuNet, None when the model is unavailable.
+
+    Model auto-downloads once (~300KB) to FACE_MODEL or ~/.cache/yunet.onnx.
+    """
+    import os as _os
+
+    try:
+        import cv2 as _cv2
+        import numpy as _np
+    except ImportError:
+        return None
+    model = _os.environ.get(
+        "FACE_MODEL", _os.path.expanduser("~/.cache/yunet.onnx"))
+    if not _os.path.exists(model):
+        try:
+            import urllib.request as _url
+
+            _os.makedirs(_os.path.dirname(model) or ".", exist_ok=True)
+            _url.urlretrieve(
+                "https://github.com/opencv/opencv_zoo/raw/main/models/"
+                "face_detection_yunet/face_detection_yunet_2023mar.onnx",
+                model)
+        except OSError:
+            return None
+    try:
+        frame = _cv2.imdecode(
+            _np.frombuffer(img, dtype=_np.uint8), _cv2.IMREAD_COLOR)
+        if frame is None:
+            return 0
+        h, w = frame.shape[:2]
+        det = _cv2.FaceDetectorYN_create(
+            model, "", (w, h), 0.6, 0.3, 5000)
+        ok, faces = det.detect(frame)
+        return 0 if faces is None else len(faces)
+    except Exception:  # noqa: BLE001 - cv2 errors vary by build
+        return None
+
+
+def _facewatch_worker(interval: float, motion_thresh: float = 10.0):
+    """Event capture: grab a frame every interval, keep it only when it
+    holds motion AND faces. Daemon. Skips while the camera is busy, so it
+    never fights live viewing (documented limitation)."""
+    import time as _time
+
+    try:
+        import numpy as _np
+        import cv2 as _cv2
+    except ImportError:
+        return
+
+    def small(img: bytes):
+        arr = _np.frombuffer(img, dtype=_np.uint8)
+        frame = _cv2.imdecode(arr, _cv2.IMREAD_GRAYSCALE)
+        if frame is None:
+            return None
+        return _cv2.resize(frame, (160, 120))
+
+    prev = None
+    while True:
+        _time.sleep(interval)
+        try:
+            img = _grab_frame()
+        except Exception:  # noqa: BLE001
+            continue
+        if img is None:
+            continue
+        cur = small(img)
+        if cur is None:
+            continue
+        if prev is not None:
+            import numpy as _np2
+
+            motion = float(_np2.mean(_cv2.absdiff(cur, prev)))
+            prev = cur
+            if motion < motion_thresh:
+                continue
+        else:
+            prev = cur
+            continue
+        try:
+            name = _save_snapshot(img)
+        except OSError:
+            continue
+        try:
+            if (_detect_faces(img) or 0) > 0:
+                base, dot, ext = name.rpartition(".")
+                os.rename(os.path.join(SNAP_DIR, name),
+                          os.path.join(SNAP_DIR, base + "-face." + ext))
+        except OSError:
+            pass
+
+
 def _periodic_worker(interval: float):
-    """Save a frame every interval seconds; skip when busy. Daemon."""
+    """Save a frame every interval seconds; skip when busy. Daemon.
+
+    Tags portraits: snapshots with faces are renamed with a -face infix
+    so the gallery can badge them.
+    """
     import time as _time
 
     while True:
@@ -266,11 +370,19 @@ def _periodic_worker(interval: float):
             img = _grab_frame()
         except Exception:  # noqa: BLE001
             continue
-        if img is not None:
-            try:
-                _save_snapshot(img)
-            except OSError:
-                pass
+        if img is None:
+            continue
+        try:
+            name = _save_snapshot(img)
+        except OSError:
+            continue
+        try:
+            if (_detect_faces(img) or 0) > 0:
+                base, dot, ext = name.rpartition(".")
+                os.rename(os.path.join(SNAP_DIR, name),
+                          os.path.join(SNAP_DIR, base + "-face." + ext))
+        except OSError:
+            pass
 
 
 def _record_clip(seconds: float):
@@ -1140,7 +1252,7 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             gwlog.warn("live: giving up after %d retries",
                                        max_retries)
-                        break
+                            break
                     if self._sleep_or_gone(delay):
                         break
                     delay = min(delay * 2, max_delay)
@@ -1211,6 +1323,9 @@ def main() -> int:
     ap.add_argument("--snap-every", type=float,
                     default=float(os.environ.get("SNAP_EVERY_SEC", "0")),
                     help="periodic snapshot interval in seconds, 0 disables")
+    ap.add_argument("--facewatch-every", type=float,
+                    default=float(os.environ.get("FACE_WATCH_SEC", "0")),
+                    help="event capture interval in seconds (motion+faces only), 0 disables")
     ap.add_argument("--retain-days", type=float,
                     default=float(os.environ.get("SNAP_RETENTION_DAYS", "0")),
                     help="delete local snapshots/clips older than N days, 0 disables")
@@ -1226,6 +1341,11 @@ def main() -> int:
                               args=(args.snap_every,), daemon=True)
         th.start()
         print(f"periodic snapshots every {args.snap_every}s into {SNAP_DIR}")
+    if args.facewatch_every > 0:
+        th = threading.Thread(target=_facewatch_worker,
+                              args=(args.facewatch_every,), daemon=True)
+        th.start()
+        print(f"face watch every {args.facewatch_every}s into {SNAP_DIR}")
     if args.retain_days > 0:
         n = _prune_snapshots(args.retain_days)
         print(f"retention: removed {n} files older than {args.retain_days}d")
