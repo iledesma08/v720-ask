@@ -50,6 +50,25 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
 .foot { display: flex; gap: .5rem; margin: 1rem 0 2rem; }
 .foot button { flex: 1; padding: .7rem; border-radius: 10px; border: 1px solid var(--line);
   background: var(--card); color: var(--txt); }
+.bar button.gear { flex: none; width: 52px; font-size: 1.2rem; }
+#settings { display: none; }
+#settings.on { display: block; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+.card h3 { margin-top: 0; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: .8rem 0; }
+.row label { flex: 1; }
+.hint { display: block; color: var(--mut); font-size: .8rem; }
+input[type=number], select { padding: .4rem; border-radius: 8px; border: 1px solid var(--line);
+  background: #0a0c11; color: var(--txt); }
+input[type=number] { width: 90px; }
+.switch { position: relative; width: 48px; height: 26px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; inset: 0; background: #3a4152; border-radius: 999px; transition: .2s; }
+.slider::before { content: ''; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: .2s; }
+.switch input:checked + .slider { background: var(--ok); }
+.switch input:checked + .slider::before { transform: translateX(22px); }
+.save { width: 100%; padding: .8rem; border-radius: 10px; border: none; background: var(--acc); color: #fff; font-weight: 700; }
 .msg { color: var(--ok); }
 .error { color: var(--err); }
 .nota { color: var(--mut); font-size: .85rem; }
@@ -87,6 +106,7 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
 <section class="view on" id="v-cam">
   <div id="live-wrap"><img class="live" id="live" alt="Live feed"></div>
   <p class="msg" id="cmsg" hidden></p>
+  <p class="error" id="cerror" hidden></p>
   <div id="countdown" hidden>
     <svg viewBox="0 0 120 120" width="120" height="120">
       <circle cx="60" cy="60" r="52" fill="none" stroke="#262c3a" stroke-width="10"/>
@@ -101,6 +121,32 @@ h3.day { color: var(--mut); font-size: .85rem; text-transform: uppercase; letter
     <button type="button" class="pri" id="save">Save snapshot</button>
     <button type="button" id="record">Record 10s clip</button>
     <button type="button" id="reload-live">Reload live</button>
+    <button type="button" class="gear" id="cfg-toggle" aria-label="Settings">⚙</button>
+  </div>
+  <div id="settings">
+    <div class="card">
+      <h3>Automatic capture</h3>
+      <div class="row">
+        <label>Event capture<span class="hint">Motion + faces</span></label>
+        <label class="switch"><input type="checkbox" id="cfg-enabled"><span class="slider"></span></label>
+      </div>
+      <div class="row">
+        <label>Check every<span class="hint">Seconds between grabs</span></label>
+        <span><input type="number" id="cfg-interval" min="2" max="300" step="1"> s</span>
+      </div>
+      <div class="row">
+        <label>Motion sensitivity<span class="hint">Lower = more</span></label>
+        <input type="number" id="cfg-thresh" min="1" max="100" step="1">
+      </div>
+    </div>
+    <div class="card">
+      <h3>Night vision</h3>
+      <div class="row">
+        <label>IR LED<span class="hint">Off / On / Auto</span></label>
+        <select id="cfg-night"><option value="off">Off</option><option value="on">On</option><option value="auto">Automatic</option></select>
+      </div>
+    </div>
+    <button class="save" id="cfg-save">Save settings</button>
   </div>
   <div class="pad" id="pad" aria-label="PTZ controls">
     <span></span><button type="button" data-dir="3" aria-label="Up">▲</button><span></span>
@@ -169,7 +215,16 @@ function say(t) {
   var c = document.getElementById('cmsg');
   if (c) { c.textContent = t; c.hidden = false; }
 }
-function fail(t) { errEl.textContent = t; errEl.hidden = false; }
+function fail(t) {
+  errEl.textContent = t;
+  errEl.hidden = false;
+  var c = document.getElementById('cerror');
+  if (c) { c.textContent = t; c.hidden = false; }
+}
+function cfail(t) {
+  var c = document.getElementById('cerror');
+  if (c) { c.textContent = t; c.hidden = false; }
+}
 function setLive(on, busy) {
   dotEl.textContent = on ? 'LIVE ' + UID : 'offline';
   dotEl.className = 'dot' + (on ? '' : ' off');
@@ -385,6 +440,52 @@ document.getElementById('record').onclick = function () {
     });
 };
 document.getElementById('reload-live').onclick = watchLive;
+document.getElementById('cfg-toggle').onclick = function () {
+  var card = document.getElementById('settings');
+  var open = card.classList.toggle('on');
+  if (open) { loadSettings(); }
+};
+function loadSettings() {
+  getJSON('dev/settings', 8000).then(
+    function (s) {
+      document.getElementById('cfg-enabled').checked = !!s.facewatch_enabled;
+      document.getElementById('cfg-interval').value = s.facewatch_interval_sec;
+      document.getElementById('cfg-thresh').value = s.motion_thresh;
+      document.getElementById('cfg-night').value = s.night_ir_mode;
+    },
+    function (e) { cfail('Settings load failed: ' + String((e && e.message) || e)); });
+}
+document.getElementById('cfg-save').onclick = function () {
+  var body = {
+    facewatch_enabled: document.getElementById('cfg-enabled').checked,
+    facewatch_interval_sec: parseFloat(document.getElementById('cfg-interval').value),
+    motion_thresh: parseFloat(document.getElementById('cfg-thresh').value),
+    night_ir_mode: document.getElementById('cfg-night').value
+  };
+  fetch('dev/settings', { method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) })
+    .then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t); });
+      }
+      return r.json();
+    })
+    .then(function (s) {
+      var mode = s.night_ir_mode;
+      if (mode === 'on' || mode === 'off') {
+        return fetch('dev/' + UID + '/ir?on=' + (mode === 'on' ? '1' : '0'),
+          { method: 'POST', cache: 'no-store' }).then(
+          function (r) {
+            if (!r.ok) { throw new Error('IR HTTP ' + r.status); }
+            return r.json();
+          }).then(function () { return s; });
+      }
+      return s;
+    })
+    .then(function () { say('Settings saved on Raspberry Pi'); })
+    .catch(function (e) { cfail('Settings save failed: ' + String((e && e.message) || e)); });
+};
 document.getElementById('del').onclick = function () {
   var names = Object.keys(selected);
   if (!names.length) { say('Nothing selected.'); return; }

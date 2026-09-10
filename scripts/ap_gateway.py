@@ -12,6 +12,9 @@ Routes:
     GET /dev/list                  JSON [{"uid":"ap-camera",...}]
     GET /dev/ap-camera/live        multipart/x-mixed-replace MJPEG
     GET /dev/ap-camera/snapshot    single image/jpeg
+    GET /dev/settings              runtime settings JSON
+    POST /dev/settings             validate + persist settings JSON
+    POST /dev/ap-camera/ir?on=0|1  IR LED (manual, #28 phase 1)
 
 Each viewer opens its own camera connection and closes it (code 0)
 on disconnect, so the camera never stays poisoned (see #10).
@@ -37,6 +40,106 @@ BOUNDARY = "jpgboundary"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
 SNAP_DIR = os.environ.get(
     "SNAP_DIR", os.path.join(os.path.dirname(__file__), "..", "snapshots"))
+SETTINGS_PATH = os.path.join(SNAP_DIR, "settings.json")
+_SETTINGS_LOCK = threading.Lock()
+DEFAULT_SETTINGS = {
+    "facewatch_enabled": True,
+    "facewatch_interval_sec": 20.0,
+    "motion_thresh": 10.0,
+    "night_ir_mode": "off",
+}
+
+
+def _load_settings():
+    """Merged runtime settings; defaults when missing/corrupt."""
+    try:
+        with open(SETTINGS_PATH) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return dict(DEFAULT_SETTINGS)
+    if not isinstance(data, dict):
+        return dict(DEFAULT_SETTINGS)
+    out = dict(DEFAULT_SETTINGS)
+    en = data.get("facewatch_enabled", out["facewatch_enabled"])
+    out["facewatch_enabled"] = bool(en) if isinstance(en, (bool, int)) else True
+    try:
+        iv = float(data.get("facewatch_interval_sec",
+                            out["facewatch_interval_sec"]))
+    except (TypeError, ValueError):
+        iv = out["facewatch_interval_sec"]
+    out["facewatch_interval_sec"] = min(max(iv, 2.0), 300.0)
+    try:
+        th = float(data.get("motion_thresh", out["motion_thresh"]))
+    except (TypeError, ValueError):
+        th = out["motion_thresh"]
+    out["motion_thresh"] = min(max(th, 1.0), 100.0)
+    mode = data.get("night_ir_mode", out["night_ir_mode"])
+    out["night_ir_mode"] = mode if mode in ("off", "on", "auto") else "off"
+    return out
+
+
+def _validate_settings(data):
+    """Returns (cleaned_dict, None) or (None, error_string)."""
+    if not isinstance(data, dict):
+        return None, "body must be a JSON object"
+    cleaned = dict(DEFAULT_SETTINGS)
+    if "facewatch_enabled" in data:
+        en = data["facewatch_enabled"]
+        if isinstance(en, bool):
+            cleaned["facewatch_enabled"] = en
+        elif en in (0, 1):
+            cleaned["facewatch_enabled"] = bool(en)
+        else:
+            return None, "facewatch_enabled must be true/false"
+    if "facewatch_interval_sec" in data:
+        try:
+            iv = float(data["facewatch_interval_sec"])
+        except (TypeError, ValueError):
+            return None, "facewatch_interval_sec must be a number"
+        if not 2.0 <= iv <= 300.0:
+            return None, "facewatch_interval_sec must be 2..300"
+        cleaned["facewatch_interval_sec"] = iv
+    if "motion_thresh" in data:
+        try:
+            th = float(data["motion_thresh"])
+        except (TypeError, ValueError):
+            return None, "motion_thresh must be a number"
+        if not 1.0 <= th <= 100.0:
+            return None, "motion_thresh must be 1..100"
+        cleaned["motion_thresh"] = th
+    if "night_ir_mode" in data:
+        if data["night_ir_mode"] not in ("off", "on", "auto"):
+            return None, "night_ir_mode must be off/on/auto"
+        cleaned["night_ir_mode"] = data["night_ir_mode"]
+    return cleaned, None
+
+
+def _save_settings_file(data):
+    """Atomic write of the full settings dict. Returns error or None."""
+    try:
+        os.makedirs(SNAP_DIR, exist_ok=True)
+        tmp = SETTINGS_PATH + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, SETTINGS_PATH)
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def _seed_settings(seed):
+    """Write seed merged over defaults, only when no file exists yet.
+
+    Readers clamp on load, so raw CLI values are safe here.
+    """
+    with _SETTINGS_LOCK:
+        if os.path.exists(SETTINGS_PATH):
+            return
+        merged = dict(DEFAULT_SETTINGS)
+        merged.update(seed)
+        _save_settings_file(merged)
+
+
 _cam_lock = threading.Lock()
 # Who holds _cam_lock since when (diagnosis for 503s).
 _cam_holder = {"what": None, "since": 0.0}
@@ -305,10 +408,12 @@ def _detect_faces(img: bytes):
         return None
 
 
-def _facewatch_worker(interval: float, motion_thresh: float = 10.0):
-    """Event capture: grab a frame every interval, keep it only when it
-    holds motion AND faces. Daemon. Skips while the camera is busy, so it
-    never fights live viewing (documented limitation)."""
+def _facewatch_worker():
+    """Event capture: grab frames, keep motion AND faces. Daemon.
+
+    Reads settings every loop (no restart needed): disabled skips cheaply,
+    interval/threshold apply on the next cycle. Skips while the camera is
+    busy, so it never fights live viewing (documented limitation)."""
     import time as _time
 
     try:
@@ -326,7 +431,23 @@ def _facewatch_worker(interval: float, motion_thresh: float = 10.0):
 
     prev = None
     while True:
-        _time.sleep(interval)
+        cfg = _load_settings()
+        if not cfg["facewatch_enabled"]:
+            prev = None
+            _time.sleep(2.0)
+            continue
+        interval = cfg["facewatch_interval_sec"]
+        thresh = cfg["motion_thresh"]
+        # Wait out the interval in short slices so a disable applies fast.
+        due = _time.monotonic() + interval
+        while _time.monotonic() < due:
+            _time.sleep(0.5)
+            if not _load_settings().get("facewatch_enabled", True):
+                prev = None
+                due = None
+                break
+        if due is None:
+            continue
         try:
             img = _grab_frame()
         except Exception:  # noqa: BLE001
@@ -341,7 +462,7 @@ def _facewatch_worker(interval: float, motion_thresh: float = 10.0):
 
             motion = float(_np2.mean(_cv2.absdiff(cur, prev)))
             prev = cur
-            if motion < motion_thresh:
+            if motion < thresh:
                 continue
         else:
             prev = cur
@@ -873,6 +994,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", len(body),
                        [("Connection", "close")])
             self.wfile.write(body)
+        elif route == "/dev/settings":
+            body = json.dumps(_load_settings()).encode()
+            self._send(200, "application/json", len(body),
+                       [("Connection", "close")])
+            self.wfile.write(body)
         elif route.startswith("/dev/shots/"):
             name = route[len("/dev/shots/"):]
             if name.endswith("/thumb"):
@@ -945,6 +1071,12 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parts.query)
         if route == f"/dev/{UID}/ptz":
             self._ptz(query)
+            return
+        if route == f"/dev/{UID}/ir":
+            self._ir(query)
+            return
+        if route == "/dev/settings":
+            self._settings_save()
             return
         if route == "/dev/sd/download":
             self._sd_download(query)
@@ -1154,6 +1286,111 @@ class Handler(BaseHTTPRequestHandler):
                    [("Connection", "close")])
         self.wfile.write(body)
 
+    def _ir(self, query) -> None:
+        """Toggle the IR LED: ?on=0|1. Phase 1 (#28) is manual only;
+        automatic mode is stored, not yet acted on.
+        """
+        global _live_sock
+        from v720_ap import v720_ap
+
+        on = query.get("on", [""])[0]
+        if on not in ("0", "1"):
+            self._send(400, "text/plain", 13,
+                       [("Connection", "close")])
+            self.wfile.write(b"on must be 0|1")
+            return
+        ena = on == "1"
+        with _live_sock_lock:
+            shared = _live_sock
+        if shared is not None:
+            try:
+                from prot_ap import prot_ap
+                import cmd_udp
+
+                _send_pkt(shared, prot_ap(content={
+                    "code": cmd_udp.CODE_FORWARD_DEV_IR_LED,
+                    "devTarget": "deadbeef",
+                    "IrLed": 1 if ena else 0,
+                }).req())
+            except Exception as exc:  # noqa: BLE001 - stale: fall through
+                log("ap-gateway").warn("ir: shared socket dead (%s)", exc)
+                with _live_sock_lock:
+                    if _live_sock is shared:
+                        _live_sock = None
+                shared = None
+            else:
+                body = json.dumps({"ir": 1 if ena else 0,
+                                   "via": "live"}).encode()
+                self._send(200, "application/json", len(body),
+                           [("Connection", "close")])
+                self.wfile.write(body)
+                return
+        if not _cam_acquire("ir"):
+            self._send(503, "text/plain", 11,
+                       [("Connection", "close")])
+            self.wfile.write(b"camera busy")
+            return
+        try:
+            sock = _open_cam(*CAMERA)
+            try:
+                resp = v720_ap(sock).ir_led(ena)
+            finally:
+                _close_cam(sock)
+        except Exception as exc:  # noqa: BLE001
+            self._send(502, "text/plain", len(str(exc)),
+                       [("Connection", "close")])
+            self.wfile.write(str(exc).encode())
+            return
+        finally:
+            _cam_release()
+        body = json.dumps({"ir": 1 if ena else 0,
+                           "via": "direct",
+                           "ack": bool(resp)}).encode()
+        self._send(200, "application/json", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
+
+    def _settings_save(self) -> None:
+        """Validate + persist settings JSON. Unknown keys are ignored."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 4096:
+            self._send(400, "text/plain", 10,
+                       [("Connection", "close")])
+            self.wfile.write(b"bad length")
+            return
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            self._send(400, "text/plain", 8,
+                       [("Connection", "close")])
+            self.wfile.write(b"bad json")
+            return
+        current = _load_settings()
+        merged = dict(current)
+        for key in DEFAULT_SETTINGS:
+            if key in data:
+                merged[key] = data[key]
+        cleaned, err = _validate_settings(merged)
+        if err is not None:
+            self._send(400, "text/plain", len(err),
+                       [("Connection", "close")])
+            self.wfile.write(err.encode())
+            return
+        with _SETTINGS_LOCK:
+            werr = _save_settings_file(cleaned)
+        if werr is not None:
+            self._send(500, "text/plain", len(werr),
+                       [("Connection", "close")])
+            self.wfile.write(werr.encode())
+            return
+        body = json.dumps(cleaned).encode()
+        self._send(200, "application/json", len(body),
+                   [("Connection", "close")])
+        self.wfile.write(body)
+
     def _snapshot(self):
         import time as _time
         from urllib.parse import urlparse, parse_qs
@@ -1349,11 +1586,15 @@ def main() -> int:
                               args=(args.snap_every,), daemon=True)
         th.start()
         print(f"periodic snapshots every {args.snap_every}s into {SNAP_DIR}")
+    # Seed the settings file from CLI/env only on first boot; afterwards
+    # the file (edited via the page) is the source of truth.
+    seed = {}
     if args.facewatch_every > 0:
-        th = threading.Thread(target=_facewatch_worker,
-                              args=(args.facewatch_every,), daemon=True)
-        th.start()
-        print(f"face watch every {args.facewatch_every}s into {SNAP_DIR}")
+        seed["facewatch_interval_sec"] = args.facewatch_every
+    _seed_settings(seed)
+    th = threading.Thread(target=_facewatch_worker, daemon=True)
+    th.start()
+    print(f"facewatch worker started (governed by {SETTINGS_PATH})")
     if args.retain_days > 0:
         n = _prune_snapshots(args.retain_days)
         print(f"retention: removed {n} files older than {args.retain_days}d")
