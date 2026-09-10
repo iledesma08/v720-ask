@@ -409,11 +409,13 @@ def _detect_faces(img: bytes):
 
 
 def _facewatch_worker():
-    """Event capture: grab frames, keep motion AND faces. Daemon.
+    """Event capture: grab frames, keep motion OR faces. Daemon.
 
     Reads settings every loop (no restart needed): disabled skips cheaply,
-    interval/threshold apply on the next cycle. Skips while the camera is
-    busy, so it never fights live viewing (documented limitation)."""
+    interval/threshold apply on the next cycle. Face check runs on every
+    grab (~65ms) so a still person is still captured. Skips while the
+    camera is busy, so it never fights live viewing (documented
+    limitation)."""
     import time as _time
 
     try:
@@ -431,53 +433,74 @@ def _facewatch_worker():
 
     prev = None
     while True:
-        cfg = _load_settings()
-        if not cfg["facewatch_enabled"]:
-            prev = None
-            _time.sleep(2.0)
-            continue
-        interval = cfg["facewatch_interval_sec"]
-        thresh = cfg["motion_thresh"]
-        # Wait out the interval in short slices so a disable applies fast.
-        due = _time.monotonic() + interval
-        while _time.monotonic() < due:
-            _time.sleep(0.5)
-            if not _load_settings().get("facewatch_enabled", True):
+        try:
+            cfg = _load_settings()
+            if not cfg["facewatch_enabled"]:
                 prev = None
-                due = None
-                break
-        if due is None:
-            continue
-        try:
-            img = _grab_frame()
-        except Exception:  # noqa: BLE001
-            continue
-        if img is None:
-            continue
-        cur = small(img)
-        if cur is None:
-            continue
-        if prev is not None:
-            import numpy as _np2
-
-            motion = float(_np2.mean(_cv2.absdiff(cur, prev)))
-            prev = cur
-            if motion < thresh:
+                _time.sleep(2.0)
                 continue
-        else:
-            prev = cur
-            continue
-        try:
-            name = _save_snapshot(img, src="auto")
-        except OSError:
-            continue
-        try:
-            if (_detect_faces(img) or 0) > 0:
-                base, dot, ext = name.rpartition(".")
-                os.rename(os.path.join(SNAP_DIR, name),
-                          os.path.join(SNAP_DIR, base + "-face." + ext))
-        except OSError:
-            pass
+            interval = cfg["facewatch_interval_sec"]
+            thresh = cfg["motion_thresh"]
+            # Wait out the interval in short slices so a disable
+            # applies fast.
+            due = _time.monotonic() + interval
+            while _time.monotonic() < due:
+                _time.sleep(0.5)
+                if not _load_settings().get("facewatch_enabled", True):
+                    prev = None
+                    due = None
+                    break
+            if due is None:
+                continue
+            try:
+                img = _grab_frame()
+            except Exception:  # noqa: BLE001
+                print("facewatch: grab raised, skipping", flush=True)
+                continue
+            if img is None:
+                print("facewatch: camera busy, skipping", flush=True)
+                continue
+            cur = small(img)
+            if cur is None:
+                print("facewatch: undecodable frame, skipping", flush=True)
+                continue
+            faces = _detect_faces(img) or 0
+            moved = False
+            motion = 0.0
+            if prev is not None:
+                import numpy as _np2
+
+                motion = float(_np2.mean(_cv2.absdiff(cur, prev)))
+                prev = cur
+                moved = motion >= thresh
+            else:
+                prev = cur
+                print("facewatch: first frame, arming", flush=True)
+                continue
+            if not moved and faces <= 0:
+                print(f"facewatch: motion={motion:.1f} faces={faces} "
+                      f"(thresh={thresh}) discard", flush=True)
+                continue
+            try:
+                name = _save_snapshot(img, src="auto")
+            except OSError:
+                print("facewatch: save failed", flush=True)
+                continue
+            try:
+                if faces > 0:
+                    base, dot, ext = name.rpartition(".")
+                    os.rename(os.path.join(SNAP_DIR, name),
+                              os.path.join(SNAP_DIR, base + "-face." + ext))
+                    name = base + "-face." + ext
+            except OSError:
+                pass
+            print(f"facewatch: saved {name} "
+                  f"(motion={motion:.1f} faces={faces})", flush=True)
+        except Exception as exc:  # noqa: BLE001 - never let the thread die
+            print(f"facewatch: loop error: {type(exc).__name__}: {exc}",
+                  flush=True)
+            prev = None
+            _time.sleep(5.0)
 
 
 def _periodic_worker(interval: float):
