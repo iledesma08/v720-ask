@@ -502,6 +502,16 @@ def _detect_faces(img: bytes):
 BURST_N = 3
 
 
+def _quiet_cv2():
+    """Silence opencv INFO/WARN spam (YuNet backend chatter). Best effort."""
+    try:
+        import cv2 as _cv2
+
+        _cv2.utils.logging.setLogLevel(_cv2.utils.logging.LOG_LEVEL_ERROR)
+    except Exception:  # noqa: BLE001 - old builds lack the API
+        pass
+
+
 def _pick_best(faces_list, motion_list):
     """Best burst frame index: most faces, tie-break higher motion.
 
@@ -542,6 +552,7 @@ def _facewatch_worker():
     prev = None
     last_mode = last_trigger = None
     last_clip = 0.0
+    quiet = 0  # sampled routine lines: discards/busy would spam every cycle
     while True:
         try:
             cfg = _load_settings()
@@ -577,7 +588,10 @@ def _facewatch_worker():
                 print("facewatch: grab raised, skipping", flush=True)
                 continue
             if img is None:
-                print("facewatch: camera busy, skipping", flush=True)
+                quiet += 1
+                if quiet % 12 == 0:
+                    print(f"facewatch: camera busy, skipping x{quiet}",
+                          flush=True)
                 continue
             cur = small(img)
             if cur is None:
@@ -600,8 +614,10 @@ def _facewatch_worker():
                 continue
             event = (moved and want_motion) or (faces > 0 and want_faces)
             if not event:
-                print(f"facewatch: motion={motion:.1f} faces={faces} "
-                      f"(thresh={thresh}) discard", flush=True)
+                quiet += 1
+                if quiet % 12 == 0:
+                    print(f"facewatch: motion={motion:.1f} faces={faces} "
+                          f"(thresh={thresh}) discard x{quiet}", flush=True)
                 continue
             if mode == "clips":
                 # No shots in clips mode: record the window instead.
@@ -2032,6 +2048,7 @@ def main() -> int:
                     help="delete local snapshots/clips older than N days, 0 disables")
     args = ap.parse_args()
     log.set_log_lvl(logging.WARN)
+    _quiet_cv2()
 
     global CAMERA
     host, _, port = args.camera.partition(":")
