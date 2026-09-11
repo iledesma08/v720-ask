@@ -76,19 +76,18 @@ def _show(label, resp):
 
 def op_209(cam):
     import cmd_udp
-    import prot_json_udp
 
     print("209: sdCardReco=0 (stop SD recording)")
     r0 = cam._ap_req({
         "code": 209,
-        "devTarget": prot_json_udp.DEFAULT_DEV_TARGET,
+        "devTarget": "deadbeef",
         "sdCardReco": 0,
     })
     c0 = _show("209-stop", r0)
     print("209: sdCardReco=1 (RESTORE recording)")
     r1 = cam._ap_req({
         "code": 209,
-        "devTarget": prot_json_udp.DEFAULT_DEV_TARGET,
+        "devTarget": "deadbeef",
         "sdCardReco": 1,
     })
     c1 = _show("209-start", r1)
@@ -100,7 +99,6 @@ def op_209(cam):
 
 def op_412(cam, date, hours, minute):
     import cmd_udp
-    import prot_json_udp
 
     before = cam.filename_list(date) or []
     print(f"412: files on {date} before: {before}")
@@ -113,7 +111,7 @@ def op_412(cam, date, hours, minute):
     print(f"412: delete date={date} hours={hours} minute={minute}")
     r = cam._ap_req({
         "code": cmd_udp.CODE_SDCARD_REQ_MEDIA_DELETE,
-        "devTarget": prot_json_udp.DEFAULT_DEV_TARGET,
+        "devTarget": "deadbeef",
         "date": date,
         "hours": hours,
         "minute": minute,
