@@ -70,6 +70,29 @@ Verdict rule: lease + cloud POST captured = STA viable. Anything less
 6. Commit pcap notes (NOT the pcap itself if huge — summarize) + verdict
    to #8.
 
+## Results 2026-09-11 (experiment ran, rolled back to AP)
+
+- **JOIN (204) accepted**: AP `Nax_*` dropped; DHCP lease `rtthread`
+  `192.168.0.22` on 2.4G (MAC matches camera). Join path works on this FW.
+- **DNS hijack works**: camera queried `v720.p2p.naxclow.com` +
+  `v720.naxclow.com`, AdGuard rewrote both (Query Log proof).
+- **Cloud contact**: `POST /app/api/ApiSysDevices/getDevInfo`
+  (`devicesCode=5c00200204AB` stable, fresh `random`/`token` per boot).
+  Retried ×2–3 with identical params, then silent. No `getA9ConfCheck`,
+  no MQTT — even answering the documented payload
+  (`code 200 + userInfo_state/userId/ota_url`) with
+  `Content-Type: application/json`.
+- **Stale config found**: status answer carried
+  `wifiName: 'Mi Internetcc-2.4Ghz'` (prior STA config, not ours).
+- **NOT tried**: real-cloud capture (declined — OTA update risk).
+- **Infra lessons**: Pi :80 belongs to npm → listener on 18080 +
+  iptables REDIRECT scoped to the camera IP only; mosquitto 2.x defaults
+  to loopback (needs `listener + allow_anonymous` conf); no tshark on
+  the Pi — tcpdump; start captures BEFORE the join and verify the file
+  grows (first pcap never ran).
+- **Rollback**: physical reset → AP back → gateway up, verified.
+  AdGuard rewrite left in place for the next attempt.
+
 ## Failure modes seen before
 
 - No answer to join (TIMEOUT): pre-existing parked behavior class (209/412
