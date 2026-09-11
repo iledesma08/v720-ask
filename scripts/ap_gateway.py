@@ -327,26 +327,31 @@ def _list_shots(day: str | None = None) -> list:
     except OSError:
         return out
     for name in sorted(names, reverse=True):
-        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part|-face|-manual|-auto)?\.(jpg|mp4|avi)",
+        m = re.fullmatch(r"([A-Za-z0-9-]+)-(\d{8})-(\d{6})((?:-\d+|-part|-face|-manual|-auto)*)\.(jpg|mp4|avi)",
                           name)
         if not m:
             continue
-        if day and m.group(1) != day:
+        if day and m.group(2) != day:
             continue
-        t = m.group(2)
-        ext = m.group(4)
-        infix = m.group(3) or ""
+        t = m.group(3)
+        ext = m.group(5)
+        infixes = m.group(4) or ""
+        face = "-face" in infixes
+        if face or "-auto" in infixes:
+            src = "auto"
+        elif "-manual" in infixes or (not infixes and ext == "jpg"):
+            src = "manual"
+        else:
+            src = None
         try:
             size = os.path.getsize(os.path.join(SNAP_DIR, name))
         except OSError:
             size = -1
-        src = "manual" if infix in ("-manual", "") and ext == "jpg" else \
-            "auto" if infix in ("-auto", "-face") else None
-        out.append({"name": name, "day": m.group(1),
+        out.append({"name": name, "day": m.group(2),
                     "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}",
                     "kind": "video" if ext == "mp4" else
                             "file" if ext == "avi" else "shot",
-                    "face": infix == "-face",
+                    "face": face,
                     "src": src,
                     "bytes": size})
     return out
