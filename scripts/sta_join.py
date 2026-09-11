@@ -64,18 +64,34 @@ def main() -> int:
         sock.open()
         cam = v720_ap(sock)
         cam.init_live_motion()
-        resp = cam._ap_req({
+        envelope = {
             "code": 204,
             "devTarget": "deadbeef",
             "s": args.ssid,
             "p": args.password,
-        })
-        if resp is None:
-            print("JOIN-SEND: TIMEOUT (no response; camera may still roam — "
-                  "check DHCP, then rollback if silent)")
-        else:
-            content = getattr(resp, "content", resp)
-            print(f"JOIN-SEND: answered {content!r}")
+        }
+        try:
+            resp = cam._ap_req(envelope)
+            if resp is None:
+                print("JOIN-SEND: TIMEOUT (no response; camera may still "
+                      "roam — check DHCP, then rollback if silent)")
+            else:
+                content = getattr(resp, "content", resp)
+                print(f"JOIN-SEND: answered {content!r}")
+        except KeyError:
+            # Some FW answers 204 without a 'content' key: dump raw.
+            from prot_ap import prot_ap as _pap
+            from prot_json_udp import prot_json_udp as _pju
+
+            raw = cam._req(_pap(content={
+                "code": 204,
+                "devTarget": "deadbeef",
+                "s": args.ssid,
+                "p": args.password,
+            }).req())
+            rj = _pju.resp(raw)
+            print(f"JOIN-SEND: answered non-content "
+                  f"{rj.json if rj is not None else None!r}")
         print("NOTE: the AP drops from here by design. See "
               "docs/sta-experiment.md next steps.")
         return 0
