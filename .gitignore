@@ -9,3 +9,5 @@ nohup.out
 snapshots/
 .venv/
 *.pyc
+# Local secrets (Telegram bot token / chat id), never commit.
+docker/telegram.env

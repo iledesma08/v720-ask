@@ -9,6 +9,11 @@ services:
     image: v720-cam-gateway:latest
     network_mode: host
     restart: unless-stopped
+    # Local secrets (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID). Create
+    # docker/telegram.env next to this file; it is git-ignored.
+    env_file:
+      - path: docker/telegram.env
+        required: false
     environment:
       - SNAP_DIR=/data/snapshots
       # Periodic snapshots, seconds between captures (0 disables).
