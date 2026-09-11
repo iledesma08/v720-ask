@@ -327,26 +327,31 @@ def _list_shots(day: str | None = None) -> list:
     except OSError:
         return out
     for name in sorted(names, reverse=True):
-        m = re.fullmatch(r"[A-Za-z0-9-]+-(\d{8})-(\d{6})(-\d+|-part|-face|-manual|-auto)?\.(jpg|mp4|avi)",
+        m = re.fullmatch(r"([A-Za-z0-9-]+)-(\d{8})-(\d{6})((?:-\d+|-part|-face|-manual|-auto)*)\.(jpg|mp4|avi)",
                           name)
         if not m:
             continue
-        if day and m.group(1) != day:
+        if day and m.group(2) != day:
             continue
-        t = m.group(2)
-        ext = m.group(4)
-        infix = m.group(3) or ""
+        t = m.group(3)
+        ext = m.group(5)
+        infixes = m.group(4) or ""
+        face = "-face" in infixes
+        if face or "-auto" in infixes:
+            src = "auto"
+        elif "-manual" in infixes or (not infixes and ext == "jpg"):
+            src = "manual"
+        else:
+            src = None
         try:
             size = os.path.getsize(os.path.join(SNAP_DIR, name))
         except OSError:
             size = -1
-        src = "manual" if infix in ("-manual", "") and ext == "jpg" else \
-            "auto" if infix in ("-auto", "-face") else None
-        out.append({"name": name, "day": m.group(1),
+        out.append({"name": name, "day": m.group(2),
                     "time": f"{t[0:2]}:{t[2:4]}:{t[4:6]}",
                     "kind": "video" if ext == "mp4" else
                             "file" if ext == "avi" else "shot",
-                    "face": infix == "-face",
+                    "face": face,
                     "src": src,
                     "bytes": size})
     return out
@@ -408,12 +413,29 @@ def _detect_faces(img: bytes):
         return None
 
 
+BURST_N = 3
+
+
+def _pick_best(faces_list, motion_list):
+    """Best burst frame index: most faces, tie-break higher motion.
+
+    Pure helper so the ranking policy is unit-testable without a camera.
+    """
+    best = 0
+    for i in range(1, len(faces_list)):
+        if (faces_list[i], motion_list[i]) > (faces_list[best], motion_list[best]):
+            best = i
+    return best
+
+
 def _facewatch_worker():
-    """Event capture: grab frames, keep motion OR faces. Daemon.
+    """Event capture: motion-triggered burst, keep motion OR faces. Daemon.
 
     Reads settings every loop (no restart needed): disabled skips cheaply,
     interval/threshold apply on the next cycle. Face check runs on every
-    grab (~65ms) so a still person is still captured. Skips while the
+    grab (~65ms) so a still person is still captured. On a motion-hit,
+    grabs a short burst back-to-back and saves only the best frame
+    (most faces, higher motion breaks ties). Skips while the
     camera is busy, so it never fights live viewing (documented
     limitation)."""
     import time as _time
@@ -480,6 +502,62 @@ def _facewatch_worker():
             if not moved and faces <= 0:
                 print(f"facewatch: motion={motion:.1f} faces={faces} "
                       f"(thresh={thresh}) discard", flush=True)
+                continue
+            if moved:
+                # Burst on motion-hit: grab fast follow-ups, keep the best
+                # single frame. Abort on busy/undecodable, keeping partial.
+                cand_imgs = [img]
+                cand_faces = [faces]
+                cand_motion = [motion]
+                last_small = cur
+                for _ in range(BURST_N - 1):
+                    try:
+                        bimg = _grab_frame()
+                    except Exception:  # noqa: BLE001
+                        print("facewatch: burst grab raised, "
+                              "keeping partial", flush=True)
+                        break
+                    if bimg is None:
+                        print("facewatch: burst camera busy, "
+                              "keeping partial", flush=True)
+                        break
+                    bcur = small(bimg)
+                    if bcur is None:
+                        print("facewatch: burst undecodable frame, "
+                              "skipping", flush=True)
+                        continue
+                    import numpy as _np3
+
+                    bmotion = float(
+                        _np3.mean(_cv2.absdiff(bcur, last_small)))
+                    cand_imgs.append(bimg)
+                    cand_faces.append(_detect_faces(bimg) or 0)
+                    cand_motion.append(bmotion)
+                    last_small = bcur
+                best = _pick_best(cand_faces, cand_motion)
+                # Anti-cluster: reference the burst end so the next cycle
+                # measures change since this event, not inside it. The
+                # interval timer restarts from here: the next due is
+                # computed fresh at the top of the loop.
+                prev = last_small
+                bfaces = cand_faces[best]
+                bmotion = cand_motion[best]
+                try:
+                    name = _save_snapshot(cand_imgs[best], src="auto")
+                except OSError:
+                    print("facewatch: save failed", flush=True)
+                    continue
+                try:
+                    if bfaces > 0:
+                        base, dot, ext = name.rpartition(".")
+                        os.rename(os.path.join(SNAP_DIR, name),
+                                  os.path.join(SNAP_DIR, base + "-face." + ext))
+                        name = base + "-face." + ext
+                except OSError:
+                    pass
+                print(f"facewatch: burst saved {name} "
+                      f"(frames={len(cand_imgs)} best={best} "
+                      f"motion={bmotion:.1f} faces={bfaces})", flush=True)
                 continue
             try:
                 name = _save_snapshot(img, src="auto")

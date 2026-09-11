@@ -1,0 +1,36 @@
+# Camera stack: MJPEG gateway (:8090) + static page (:8000).
+# Run from the repo root:  docker compose -f docker/docker-compose.cam.yml up -d --build
+# Both services share host networking (like adguardhome / nginx-proxy-manager
+# in infra): the gateway must reach 192.168.169.1 through the host's wlan0,
+# and npm + AdGuard already own 80/443/53 on the host.
+# camara.lan (AdGuard rewrite -> Pi) fronts both via npm:
+#   /        -> :8000 (static page)
+#   /dev/*   -> :8090 (gateway, custom location)
+# Full frontal recipe: docs/npm-cam-route.md.
+
+services:
+  cam-gateway:
+    build:
+      context: ..
+      dockerfile: docker/cam-gateway.Dockerfile
+    image: v720-ask/cam-gateway:latest
+    container_name: cam-gateway
+    network_mode: host
+    restart: unless-stopped
+    command: ["python", "scripts/ap_gateway.py", "--port", "8090"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8090/dev/list"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  cam-static:
+    image: v720-ask/cam-gateway:latest
+    container_name: cam-static
+    network_mode: host
+    restart: unless-stopped
+    command: ["python", "-m", "http.server", "8000", "--directory", "static"]
+    depends_on:
+      cam-gateway:
+        condition: service_started
