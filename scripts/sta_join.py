@@ -63,7 +63,13 @@ def main() -> int:
         sock = netcl_tcp(args.host, args.port)
         sock.open()
         cam = v720_ap(sock)
-        cam.init_live_motion()
+        try:
+            cam.init_live_motion()
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            print("INIT-WARN (continuing anyway):")
+            traceback.print_exc()
         envelope = {
             "code": 204,
             "devTarget": "deadbeef",
@@ -96,11 +102,21 @@ def main() -> int:
               "docs/sta-experiment.md next steps.")
         return 0
     except Exception as exc:  # noqa: BLE001
-        print(f"JOIN_FAIL: {type(exc).__name__}: {exc}")
+        import traceback
+
+        print("JOIN_FAIL:")
+        traceback.print_exc()
         return 2
     finally:
         try:
             if sock is not None:
+                from prot_ap import prot_ap as _pap2
+
+                try:
+                    sock.send(_pap2(content={
+                        "code": 0, "devTarget": "deadbeef"}).req())
+                except Exception:  # noqa: BLE001
+                    pass
                 sock.close()
         except Exception:  # noqa: BLE001
             pass
