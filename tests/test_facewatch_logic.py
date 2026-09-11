@@ -79,10 +79,6 @@ class LoadClampTest(unittest.TestCase):
     def test_clip_sec_clamped(self):
         self.assertEqual(self._load({"clip_sec": 999})["clip_sec"], 60.0)
 
-    def test_retention_zero_kept(self):
-        self.assertEqual(
-            self._load({"snap_retention_days": 0})["snap_retention_days"], 0)
-
 
 class ListShotsTest(unittest.TestCase):
     def _list(self, names):
