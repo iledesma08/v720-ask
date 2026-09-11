@@ -55,6 +55,7 @@ DEFAULT_SETTINGS = {
     "alert_start_hour": 0,
     "alert_end_hour": 5,
     "alert_cooldown_sec": 300.0,
+    "snap_retention_days": 7.0,
 }
 
 
@@ -112,6 +113,11 @@ def _load_settings():
     except (TypeError, ValueError):
         ac = out["alert_cooldown_sec"]
     out["alert_cooldown_sec"] = min(max(ac, 30.0), 3600.0)
+    try:
+        rd = float(data.get("snap_retention_days", out["snap_retention_days"]))
+    except (TypeError, ValueError):
+        rd = out["snap_retention_days"]
+    out["snap_retention_days"] = min(max(rd, 0.0), 365.0)
     return out
 
 
@@ -197,6 +203,14 @@ def _validate_settings(data):
         if not 30.0 <= ac <= 3600.0:
             return None, "alert_cooldown_sec must be 30..3600"
         cleaned["alert_cooldown_sec"] = ac
+    if "snap_retention_days" in data:
+        try:
+            rd = float(data["snap_retention_days"])
+        except (TypeError, ValueError):
+            return None, "snap_retention_days must be a number"
+        if not 0.0 <= rd <= 365.0:
+            return None, "snap_retention_days must be 0..365"
+        cleaned["snap_retention_days"] = rd
     return cleaned, None
 
 
@@ -331,13 +345,24 @@ def _prune_snapshots(days: float) -> int:
     return removed
 
 
-def _retention_worker(days: float) -> None:
+def _retention_worker() -> None:
+    """Prune snapshots older than the settings retention, every 6h.
+
+    Reads settings each cycle (0 disables); slices the sleep so a
+    settings change applies within minutes, not hours.
+    """
     import time as _time
 
     while True:
-        _time.sleep(6 * 3600.0)
+        for _ in range(72):
+            _time.sleep(300.0)
         try:
-            _prune_snapshots(days)
+            days = _load_settings()["snap_retention_days"]
+            if days > 0:
+                removed = _prune_snapshots(days)
+                if removed:
+                    print(f"retention: removed {removed} files "
+                          f"older than {days}d", flush=True)
         except Exception:  # noqa: BLE001
             pass
 
@@ -2047,16 +2072,14 @@ def main() -> int:
     seed = {}
     if args.facewatch_every > 0:
         seed["facewatch_interval_sec"] = args.facewatch_every
+    if args.retain_days > 0:
+        seed["snap_retention_days"] = args.retain_days
     _seed_settings(seed)
     th = threading.Thread(target=_facewatch_worker, daemon=True)
     th.start()
     print(f"facewatch worker started (governed by {SETTINGS_PATH})")
-    if args.retain_days > 0:
-        n = _prune_snapshots(args.retain_days)
-        print(f"retention: removed {n} files older than {args.retain_days}d")
-        th = threading.Thread(target=_retention_worker,
-                              args=(args.retain_days,), daemon=True)
-        th.start()
+    th = threading.Thread(target=_retention_worker, daemon=True)
+    th.start()
 
     srv = ThreadingHTTPServer((args.listen, args.port), Handler)
     print(f"serving {UID} {CAMERA[0]}:{CAMERA[1]} on "

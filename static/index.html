@@ -162,6 +162,10 @@ input[type=number] { width: 90px; }
         <label>Motion sensitivity<span class="hint">Lower = more</span></label>
         <input type="number" id="cfg-thresh" min="1" max="100" step="1">
       </div>
+      <div class="row">
+        <label>Keep files<span class="hint">Days, 0 = forever</span></label>
+        <span><input type="number" id="cfg-retention" min="0" max="365" step="1"> d</span>
+      </div>
       </div>
     </div>
     <div class="card">
@@ -553,6 +557,7 @@ function loadSettings() {
       document.getElementById('cfg-tg-start').value = s.alert_start_hour;
       document.getElementById('cfg-tg-end').value = s.alert_end_hour;
       document.getElementById('cfg-tg-cd').value = s.alert_cooldown_sec;
+      document.getElementById('cfg-retention').value = s.snap_retention_days;
       syncAutoRows();
       document.getElementById('cfg-interval').value = s.facewatch_interval_sec;
       document.getElementById('cfg-thresh').value = s.motion_thresh;
@@ -571,6 +576,7 @@ document.getElementById('cfg-save').onclick = function () {
     alert_start_hour: parseInt(document.getElementById('cfg-tg-start').value, 10),
     alert_end_hour: parseInt(document.getElementById('cfg-tg-end').value, 10),
     alert_cooldown_sec: parseFloat(document.getElementById('cfg-tg-cd').value),
+    snap_retention_days: parseFloat(document.getElementById('cfg-retention').value),
     facewatch_interval_sec: parseFloat(document.getElementById('cfg-interval').value),
     motion_thresh: parseFloat(document.getElementById('cfg-thresh').value),
     night_ir_mode: document.getElementById('cfg-night').value
