@@ -77,6 +77,12 @@ with a live MJPEG `<img>` + *Watch live* and *Snapshot* links.
 - Gallery/recordings: live in the page (shots, auto/manual clips, SD
   browser) and in `GET /dev/shots`; the gallery refreshes itself ~10s
   after auto-captures land.
+- **WiFi link (validated 2026-09-11, #25):** `wlan0` camera-only, -41dBm,
+  0% loss idle and under 10s-clip load, no TX retry growth, no gateway
+  errors. Occasional ~150ms ping outliers persist with `power_save off` —
+  camera-SoC scheduling, harmless for buffered MJPEG; no code tuning
+  indicated. `sudo iw dev wlan0 set power_save off` still recommended
+  (resets on reassoc).
 
 ## 8. Runtime settings (gear in the Camera tab, #27)
 
