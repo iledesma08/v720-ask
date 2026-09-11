@@ -495,13 +495,16 @@ def _detect_faces(img: bytes):
         "FACE_MODEL", _os.path.expanduser("~/.cache/yunet.onnx"))
     if not _os.path.exists(model):
         try:
+            import shutil as _sh
             import urllib.request as _url
 
             _os.makedirs(_os.path.dirname(model) or ".", exist_ok=True)
-            _url.urlretrieve(
+            req = _url.Request(
                 "https://github.com/opencv/opencv_zoo/raw/main/models/"
-                "face_detection_yunet/face_detection_yunet_2023mar.onnx",
-                model)
+                "face_detection_yunet/face_detection_yunet_2023mar.onnx")
+            with _url.urlopen(req, timeout=30) as resp, \
+                    open(model, "wb") as fh:
+                _sh.copyfileobj(resp, fh)
         except OSError:
             return None
     try:
