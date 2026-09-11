@@ -132,8 +132,27 @@ input[type=number] { width: 90px; }
     <div class="card">
       <h3>Automatic capture</h3>
       <div class="row">
-        <label>Event capture<span class="hint">Motion + faces</span></label>
+        <label>Event capture<span class="hint">On / off</span></label>
         <label class="switch"><input type="checkbox" id="cfg-enabled"><span class="slider"></span></label>
+      </div>
+      <div id="cfg-auto-rows">
+      <div class="row">
+        <label>Capture mode<span class="hint">Shots / clips</span></label>
+        <select id="cfg-mode"><option value="shots">Shots</option><option value="clips">Clips</option></select>
+      </div>
+      <div class="row">
+        <label>Trigger<span class="hint">Motion / faces / both</span></label>
+        <select id="cfg-trigger"><option value="motion">Motion</option><option value="faces">Faces</option><option value="both">Both</option></select>
+      </div>
+      <div id="cfg-clip-rows" style="display:none">
+      <div class="row">
+        <label>Clip length<span class="hint">Seconds per auto-clip</span></label>
+        <span><input type="number" id="cfg-clipsec" min="3" max="60" step="1"> s</span>
+      </div>
+      <div class="row">
+        <label>Clip cooldown<span class="hint">Gap between clips</span></label>
+        <span><input type="number" id="cfg-cooldown" min="5" max="300" step="1"> s</span>
+      </div>
       </div>
       <div class="row">
         <label>Check every<span class="hint">Seconds between grabs</span></label>
@@ -142,6 +161,7 @@ input[type=number] { width: 90px; }
       <div class="row">
         <label>Motion sensitivity<span class="hint">Lower = more</span></label>
         <input type="number" id="cfg-thresh" min="1" max="100" step="1">
+      </div>
       </div>
     </div>
     <div class="card">
@@ -469,10 +489,33 @@ document.getElementById('cfg-toggle').onclick = function () {
   var open = card.classList.toggle('on');
   if (open) { loadSettings(); }
 };
+function syncAutoRows() {
+  var on = document.getElementById('cfg-enabled').checked;
+  document.getElementById('cfg-auto-rows').style.display = on ? '' : 'none';
+  syncClipRows();
+}
+function syncClipRows() {
+  var on = document.getElementById('cfg-enabled').checked;
+  var show = on && document.getElementById('cfg-mode').value === 'clips';
+  document.getElementById('cfg-clip-rows').style.display = show ? '' : 'none';
+}
+document.getElementById('cfg-enabled').onchange = syncAutoRows;
+document.getElementById('cfg-mode').onchange = syncClipRows;
 function loadSettings() {
   getJSON('dev/settings', 8000).then(
     function (s) {
       document.getElementById('cfg-enabled').checked = !!s.facewatch_enabled;
+      var cm = s.capture_mode || 'shots';
+      if (cm === 'off') {
+        // Legacy value: off-ness now lives in the toggle.
+        cm = 'shots';
+        document.getElementById('cfg-enabled').checked = false;
+      }
+      document.getElementById('cfg-mode').value = cm;
+      document.getElementById('cfg-trigger').value = s.capture_trigger || 'both';
+      document.getElementById('cfg-clipsec').value = s.clip_sec;
+      document.getElementById('cfg-cooldown').value = s.clip_cooldown_sec;
+      syncAutoRows();
       document.getElementById('cfg-interval').value = s.facewatch_interval_sec;
       document.getElementById('cfg-thresh').value = s.motion_thresh;
       document.getElementById('cfg-night').value = s.night_ir_mode;
@@ -482,6 +525,10 @@ function loadSettings() {
 document.getElementById('cfg-save').onclick = function () {
   var body = {
     facewatch_enabled: document.getElementById('cfg-enabled').checked,
+    capture_mode: document.getElementById('cfg-mode').value,
+    capture_trigger: document.getElementById('cfg-trigger').value,
+    clip_sec: parseFloat(document.getElementById('cfg-clipsec').value),
+    clip_cooldown_sec: parseFloat(document.getElementById('cfg-cooldown').value),
     facewatch_interval_sec: parseFloat(document.getElementById('cfg-interval').value),
     motion_thresh: parseFloat(document.getElementById('cfg-thresh').value),
     night_ir_mode: document.getElementById('cfg-night').value
