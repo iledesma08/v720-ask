@@ -299,9 +299,28 @@ function kindBadge(s) {
 function loadShots(day) {
   getJSON('dev/shots' + (day ? '?day=' + day : ''), 8000).then(
     function (shots) {
+      lastGallerySig = gallerySig(shots);
       renderShots(filterShots(shots));
     },
     function (e) { fail('Gallery: ' + String((e && e.message) || e)); });
+}
+var lastGallerySig = '';
+function gallerySig(shots) {
+  return (shots || []).map(function (s) { return s.name + ':' + (s.bytes || 0); }).join('|');
+}
+// Auto-captures land without any click: refresh the gallery when something
+// changed, but never while selecting (render wipes selection) and never
+// off the gallery view.
+function maybeRefreshGallery() {
+  if (!document.getElementById('v-rpi').classList.contains('on')) { return; }
+  if (Object.keys(selected).length) { return; }
+  getJSON('dev/shots', 8000).then(function (shots) {
+    var sig = gallerySig(shots);
+    if (sig !== lastGallerySig) {
+      lastGallerySig = sig;
+      renderShots(filterShots(shots));
+    }
+  }, function () {});
 }
 var shotFilter = 'all';
 var shotSort = 'new';
@@ -726,12 +745,14 @@ getJSON('dev/list', 8000).then(
     if (found) { watchLive(); } else { fail('Camera not registered.'); }
     loadShots(null);
     setInterval(pollState, 10000);
+    setInterval(maybeRefreshGallery, 10000);
   },
   function (e) {
     setLive(false);
     renderCal();
     fail('Offline: ' + String((e && e.name === 'AbortError') ? 'timeout' : ((e && e.message) || e)));
     setInterval(pollState, 10000);
+    setInterval(maybeRefreshGallery, 10000);
   });
 </script>
 </body>
