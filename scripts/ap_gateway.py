@@ -47,6 +47,10 @@ DEFAULT_SETTINGS = {
     "facewatch_interval_sec": 20.0,
     "motion_thresh": 10.0,
     "night_ir_mode": "off",
+    "capture_mode": "shots",
+    "capture_trigger": "both",
+    "clip_sec": 10.0,
+    "clip_cooldown_sec": 30.0,
 }
 
 
@@ -75,6 +79,22 @@ def _load_settings():
     out["motion_thresh"] = min(max(th, 1.0), 100.0)
     mode = data.get("night_ir_mode", out["night_ir_mode"])
     out["night_ir_mode"] = mode if mode in ("off", "on") else "off"
+    cmode = data.get("capture_mode", out["capture_mode"])
+    out["capture_mode"] = cmode if cmode in ("shots", "clips", "off") \
+        else "shots"
+    trig = data.get("capture_trigger", out["capture_trigger"])
+    out["capture_trigger"] = trig if trig in ("motion", "faces", "both") \
+        else "both"
+    try:
+        cs = float(data.get("clip_sec", out["clip_sec"]))
+    except (TypeError, ValueError):
+        cs = out["clip_sec"]
+    out["clip_sec"] = min(max(cs, 3.0), 60.0)
+    try:
+        cd = float(data.get("clip_cooldown_sec", out["clip_cooldown_sec"]))
+    except (TypeError, ValueError):
+        cd = out["clip_cooldown_sec"]
+    out["clip_cooldown_sec"] = min(max(cd, 5.0), 300.0)
     return out
 
 
@@ -111,6 +131,30 @@ def _validate_settings(data):
         if data["night_ir_mode"] not in ("off", "on"):
             return None, "night_ir_mode must be off/on"
         cleaned["night_ir_mode"] = data["night_ir_mode"]
+    if "capture_mode" in data:
+        if data["capture_mode"] not in ("shots", "clips", "off"):
+            return None, "capture_mode must be shots/clips/off"
+        cleaned["capture_mode"] = data["capture_mode"]
+    if "capture_trigger" in data:
+        if data["capture_trigger"] not in ("motion", "faces", "both"):
+            return None, "capture_trigger must be motion/faces/both"
+        cleaned["capture_trigger"] = data["capture_trigger"]
+    if "clip_sec" in data:
+        try:
+            cs = float(data["clip_sec"])
+        except (TypeError, ValueError):
+            return None, "clip_sec must be a number"
+        if not 3.0 <= cs <= 60.0:
+            return None, "clip_sec must be 3..60"
+        cleaned["clip_sec"] = cs
+    if "clip_cooldown_sec" in data:
+        try:
+            cd = float(data["clip_cooldown_sec"])
+        except (TypeError, ValueError):
+            return None, "clip_cooldown_sec must be a number"
+        if not 5.0 <= cd <= 300.0:
+            return None, "clip_cooldown_sec must be 5..300"
+        cleaned["clip_cooldown_sec"] = cd
     return cleaned, None
 
 
@@ -429,15 +473,15 @@ def _pick_best(faces_list, motion_list):
 
 
 def _facewatch_worker():
-    """Event capture: motion-triggered burst, keep motion OR faces. Daemon.
+    """Event capture: shots or clips on motion/faces, per settings. Daemon.
 
-    Reads settings every loop (no restart needed): disabled skips cheaply,
-    interval/threshold apply on the next cycle. Face check runs on every
-    grab (~65ms) so a still person is still captured. On a motion-hit,
-    grabs a short burst back-to-back and saves only the best frame
-    (most faces, higher motion breaks ties). Skips while the
-    camera is busy, so it never fights live viewing (documented
-    limitation)."""
+    Reads settings every loop (no restart needed): mode (shots/clips/off),
+    trigger (motion/faces/both), interval/threshold and clip
+    seconds/cooldown apply on the next cycle. Shots mode keeps the
+    burst best-frame behavior; clips mode records a background clip per
+    trigger event instead of saving shots (no pre-roll: the clip starts
+    at the trigger). Skips while the camera is busy, so it never fights
+    live viewing (documented limitation)."""
     import time as _time
 
     try:
@@ -454,10 +498,19 @@ def _facewatch_worker():
         return _cv2.resize(frame, (160, 120))
 
     prev = None
+    last_mode = last_trigger = None
+    last_clip = 0.0
     while True:
         try:
             cfg = _load_settings()
-            if not cfg["facewatch_enabled"]:
+            mode = cfg["capture_mode"]
+            trigger = cfg["capture_trigger"]
+            if (mode, trigger) != (last_mode, last_trigger):
+                print(f"facewatch: mode={mode} trigger={trigger} "
+                      f"(interval={cfg['facewatch_interval_sec']} "
+                      f"thresh={cfg['motion_thresh']})", flush=True)
+                last_mode, last_trigger = mode, trigger
+            if not cfg["facewatch_enabled"] or mode == "off":
                 prev = None
                 _time.sleep(2.0)
                 continue
@@ -468,7 +521,9 @@ def _facewatch_worker():
             due = _time.monotonic() + interval
             while _time.monotonic() < due:
                 _time.sleep(0.5)
-                if not _load_settings().get("facewatch_enabled", True):
+                now_cfg = _load_settings()
+                if not now_cfg.get("facewatch_enabled", True) or \
+                        now_cfg.get("capture_mode", "shots") == "off":
                     prev = None
                     due = None
                     break
@@ -486,7 +541,9 @@ def _facewatch_worker():
             if cur is None:
                 print("facewatch: undecodable frame, skipping", flush=True)
                 continue
-            faces = _detect_faces(img) or 0
+            want_faces = trigger in ("faces", "both")
+            want_motion = trigger in ("motion", "both")
+            faces = (_detect_faces(img) or 0) if want_faces else 0
             moved = False
             motion = 0.0
             if prev is not None:
@@ -499,11 +556,28 @@ def _facewatch_worker():
                 prev = cur
                 print("facewatch: first frame, arming", flush=True)
                 continue
-            if not moved and faces <= 0:
+            event = (moved and want_motion) or (faces > 0 and want_faces)
+            if not event:
                 print(f"facewatch: motion={motion:.1f} faces={faces} "
                       f"(thresh={thresh}) discard", flush=True)
                 continue
-            if moved:
+            if mode == "clips":
+                # No shots in clips mode: record the window instead.
+                # Cooldown keeps consecutive events to one clip.
+                now = _time.monotonic()
+                if now - last_clip < cfg["clip_cooldown_sec"]:
+                    print("facewatch: clip cooldown, skipping", flush=True)
+                    continue
+                last_clip = now
+                tag = "auto-face" if faces > 0 else "auto"
+                th = threading.Thread(target=_auto_clip,
+                                      args=(cfg["clip_sec"], tag),
+                                      daemon=True)
+                th.start()
+                print(f"facewatch: clip started ({tag}, "
+                      f"{cfg['clip_sec']}s)", flush=True)
+                continue
+            if moved and want_motion:
                 # Burst on motion-hit: grab fast follow-ups, keep the best
                 # single frame. Abort on busy/undecodable, keeping partial.
                 cand_imgs = [img]
@@ -531,7 +605,8 @@ def _facewatch_worker():
                     bmotion = float(
                         _np3.mean(_cv2.absdiff(bcur, last_small)))
                     cand_imgs.append(bimg)
-                    cand_faces.append(_detect_faces(bimg) or 0)
+                    cand_faces.append((_detect_faces(bimg) or 0)
+                                     if want_faces else 0)
                     cand_motion.append(bmotion)
                     last_small = bcur
                 best = _pick_best(cand_faces, cand_motion)
@@ -610,12 +685,14 @@ def _periodic_worker(interval: float):
             pass
 
 
-def _record_clip(seconds: float):
+def _record_clip(seconds: float, tag: str | None = None):
     """Capture `seconds` of live JPEGs and mux to timestamped .mp4.
 
     Returns the file name, or None when no frames arrived. Needs
     numpy+opencv (requirements-min); raises RuntimeError without them.
-    Caller must hold _cam_lock.
+    Caller must hold _cam_lock. `tag` marks automatic clips
+    ("auto", "auto-face") so the gallery can badge them; manual
+    recordings pass None.
     """
     import datetime as _dt
     import time as _time
@@ -650,7 +727,8 @@ def _record_clip(seconds: float):
     h, w = dec[0].shape[:2]
     os.makedirs(SNAP_DIR, exist_ok=True)
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = f"{UID}-{stamp}.mp4"
+    infix = f"-{tag}" if tag in ("auto", "auto-face") else ""
+    name = f"{UID}-{stamp}{infix}.mp4"
     path = os.path.join(SNAP_DIR, name)
     n = 1
     while os.path.exists(path):
@@ -667,6 +745,33 @@ def _record_clip(seconds: float):
         _mux_cv2(dec, tmp, w, h)
     os.rename(tmp, path)
     return name
+
+
+def _auto_clip(seconds: float, tag: str):
+    """Background auto-clip for the facewatch worker. Daemon-safe.
+
+    Non-blocking camera acquire: skips with a log line when busy so
+    the worker loop (and live viewing) never stalls on a recording.
+    """
+    if not _cam_acquire("auto-clip"):
+        print("facewatch: auto-clip skipped (camera busy)", flush=True)
+        return
+    try:
+        try:
+            name = _record_clip(seconds, tag=tag)
+        except RuntimeError as exc:
+            print(f"facewatch: auto-clip failed: {exc}", flush=True)
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"facewatch: auto-clip error: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            return
+    finally:
+        _cam_release()
+    if name is None:
+        print("facewatch: auto-clip got no frames", flush=True)
+        return
+    print(f"facewatch: auto-clip saved {name}", flush=True)
 
 
 def _mux_ffmpeg(dec, tmp, w, h, fps, audio=None) -> bool:
