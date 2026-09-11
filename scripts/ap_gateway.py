@@ -55,6 +55,7 @@ DEFAULT_SETTINGS = {
     "alert_start_hour": 0,
     "alert_end_hour": 5,
     "alert_cooldown_sec": 300.0,
+    "snap_retention_days": 7.0,
 }
 
 
@@ -112,6 +113,11 @@ def _load_settings():
     except (TypeError, ValueError):
         ac = out["alert_cooldown_sec"]
     out["alert_cooldown_sec"] = min(max(ac, 30.0), 3600.0)
+    try:
+        rd = float(data.get("snap_retention_days", out["snap_retention_days"]))
+    except (TypeError, ValueError):
+        rd = out["snap_retention_days"]
+    out["snap_retention_days"] = min(max(rd, 0.0), 365.0)
     return out
 
 
@@ -197,6 +203,14 @@ def _validate_settings(data):
         if not 30.0 <= ac <= 3600.0:
             return None, "alert_cooldown_sec must be 30..3600"
         cleaned["alert_cooldown_sec"] = ac
+    if "snap_retention_days" in data:
+        try:
+            rd = float(data["snap_retention_days"])
+        except (TypeError, ValueError):
+            return None, "snap_retention_days must be a number"
+        if not 0.0 <= rd <= 365.0:
+            return None, "snap_retention_days must be 0..365"
+        cleaned["snap_retention_days"] = rd
     return cleaned, None
 
 
@@ -275,6 +289,17 @@ LATEST_MAX_AGE = 3.0
 # G.711 audio chunks (stripped) published by the reader for clip muxing.
 _audio_lock = threading.Lock()
 _audio_chunks: list = []
+# ~32s of 8kHz mono: plenty for any clip mux, bounds hours-long viewing.
+_audio_cap = 256 * 1024
+
+
+def _push_audio(data: bytes) -> None:
+    """Append a live audio packet, dropping oldest beyond the cap."""
+    with _audio_lock:
+        _audio_chunks.append(data)
+        total = sum(len(c) for c in _audio_chunks)
+        while total > _audio_cap and len(_audio_chunks) > 1:
+            total -= len(_audio_chunks.pop(0))
 
 
 def _sd_call(fn):
@@ -350,13 +375,24 @@ def _sweep_part_files(snap_dir=None) -> int:
     return removed
 
 
-def _retention_worker(days: float) -> None:
+def _retention_worker() -> None:
+    """Prune snapshots older than the settings retention, every 6h.
+
+    Reads settings each cycle (0 disables); slices the sleep so a
+    settings change applies within minutes, not hours.
+    """
     import time as _time
 
     while True:
-        _time.sleep(6 * 3600.0)
+        for _ in range(72):
+            _time.sleep(300.0)
         try:
-            _prune_snapshots(days)
+            days = _load_settings()["snap_retention_days"]
+            if days > 0:
+                removed = _prune_snapshots(days)
+                if removed:
+                    print(f"retention: removed {removed} files "
+                          f"older than {days}d", flush=True)
         except Exception:  # noqa: BLE001
             pass
 
@@ -524,6 +560,16 @@ def _detect_faces(img: bytes):
 BURST_N = 3
 
 
+def _quiet_cv2():
+    """Silence opencv INFO/WARN spam (YuNet backend chatter). Best effort."""
+    try:
+        import cv2 as _cv2
+
+        _cv2.utils.logging.setLogLevel(_cv2.utils.logging.LOG_LEVEL_ERROR)
+    except Exception:  # noqa: BLE001 - old builds lack the API
+        pass
+
+
 def _pick_best(faces_list, motion_list):
     """Best burst frame index: most faces, tie-break higher motion.
 
@@ -564,6 +610,7 @@ def _facewatch_worker():
     prev = None
     last_mode = last_trigger = None
     last_clip = 0.0
+    quiet = 0  # sampled routine lines: discards/busy would spam every cycle
     while True:
         try:
             cfg = _load_settings()
@@ -599,7 +646,10 @@ def _facewatch_worker():
                 print("facewatch: grab raised, skipping", flush=True)
                 continue
             if img is None:
-                print("facewatch: camera busy, skipping", flush=True)
+                quiet += 1
+                if quiet % 12 == 0:
+                    print(f"facewatch: camera busy, skipping x{quiet}",
+                          flush=True)
                 continue
             cur = small(img)
             if cur is None:
@@ -622,8 +672,10 @@ def _facewatch_worker():
                 continue
             event = (moved and want_motion) or (faces > 0 and want_faces)
             if not event:
-                print(f"facewatch: motion={motion:.1f} faces={faces} "
-                      f"(thresh={thresh}) discard", flush=True)
+                quiet += 1
+                if quiet % 12 == 0:
+                    print(f"facewatch: motion={motion:.1f} faces={faces} "
+                          f"(thresh={thresh}) discard x{quiet}", flush=True)
                 continue
             if mode == "clips":
                 # No shots in clips mode: record the window instead.
@@ -1273,13 +1325,11 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
                 pending.append(p._pkg_id)
             if p.cmd == cmd_udp.P2P_UDP_CMD_G711 and \
                     p.msg_flag == cmd_udp.PROTOCOL_MSG_FLAG_FINISH:
-                with _audio_lock:
-                    _audio_chunks.append(bytes(p.payload[:-5]))
+                _push_audio(bytes(p.payload[:-5]))
                 continue
             if p.cmd == cmd_udp.P2P_UDP_CMD_PCM:
                 # This camera pushes audio as raw PCM frames, not G711.
-                with _audio_lock:
-                    _audio_chunks.append(bytes(p.payload))
+                _push_audio(bytes(p.payload))
                 continue
             if p.cmd != cmd_udp.P2P_UDP_CMD_JPEG:
                 continue
@@ -2054,6 +2104,7 @@ def main() -> int:
                     help="delete local snapshots/clips older than N days, 0 disables")
     args = ap.parse_args()
     log.set_log_lvl(logging.WARN)
+    _quiet_cv2()
 
     global CAMERA
     host, _, port = args.camera.partition(":")
@@ -2069,6 +2120,8 @@ def main() -> int:
     seed = {}
     if args.facewatch_every > 0:
         seed["facewatch_interval_sec"] = args.facewatch_every
+    if args.retain_days > 0:
+        seed["snap_retention_days"] = args.retain_days
     _seed_settings(seed)
     th = threading.Thread(target=_facewatch_worker, daemon=True)
     th.start()
@@ -2076,12 +2129,8 @@ def main() -> int:
     swept = _sweep_part_files()
     if swept:
         print(f"startup: removed {swept} orphan .part files", flush=True)
-    if args.retain_days > 0:
-        n = _prune_snapshots(args.retain_days)
-        print(f"retention: removed {n} files older than {args.retain_days}d")
-        th = threading.Thread(target=_retention_worker,
-                              args=(args.retain_days,), daemon=True)
-        th.start()
+    th = threading.Thread(target=_retention_worker, daemon=True)
+    th.start()
 
     srv = ThreadingHTTPServer((args.listen, args.port), Handler)
     print(f"serving {UID} {CAMERA[0]}:{CAMERA[1]} on "

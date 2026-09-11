@@ -1,7 +1,9 @@
 # Web camera passthrough — Pi HOWTO (one page)
 
 Goal: view the camera in the browser via the `:8090` gateway + this page
-(`static/index.html`). No gallery or recordings (that goes in #9).
+(`static/index.html`): live view, snapshots, clips, gallery, PTZ, event
+capture and Telegram alerts. Primary deployment is Docker
+(`docker-compose.yml`); the manual venv run below is for debugging.
 
 ## 1. Requirements
 
@@ -72,17 +74,39 @@ with a live MJPEG `<img>` + *Watch live* and *Snapshot* links.
   `502 no frame in time`: physical camera reset + one retry.
 - **AdGuard (port 53) reserved** for the future STA mode (see #8):
   do not expose or move 53; the web front end stays on NPM (80/443).
-- Gallery/recordings: out of scope, tracked in #9.
+- Gallery/recordings: live in the page (shots, auto/manual clips, SD
+  browser) and in `GET /dev/shots`; the gallery refreshes itself ~10s
+  after auto-captures land.
 
 ## 8. Runtime settings (gear in the Camera tab, #27)
 
 - `GET /dev/settings` reads, `POST /dev/settings` validates + persists to
   `snapshots/settings.json` (same volume, survives restarts).
-- Keys: `facewatch_enabled` (bool), `facewatch_interval_sec` (2–300),
-  `motion_thresh` (1–100), `night_ir_mode` (off/on; the camera's On is
+- Keys (ranges enforced, same table as `readme.md`):
+  `facewatch_enabled` (bool), `capture_mode` (shots/clips),
+  `capture_trigger` (motion/faces/both), `facewatch_interval_sec` (2–300),
+  `motion_thresh` (1–100), `clip_sec` (3–60, clips mode only),
+  `clip_cooldown_sec` (5–300, clips mode only), `telegram_enabled` (bool),
+  `alert_start_hour`/`alert_end_hour` (0–23, Córdoba, overnight wrap),
+  `alert_cooldown_sec` (30–3600), `snap_retention_days` (0–365, 0 = forever,
+  default 7), `night_ir_mode` (off/on; the camera's On is
   already automatic).
-- The facewatch worker re-reads the file every loop — no restart needed.
+- Workers re-read the file every loop — no restart needed.
 - Saving `night_ir_mode` on/off also drives the IR LED immediately
   (`POST /dev/ap-camera/ir?on=0|1`, #28 phase 1).
-- First boot seeds the file from CLI/env (`FACE_WATCH_SEC`); afterwards the
-  file is the source of truth.
+- First boot seeds the file from CLI/env (`FACE_WATCH_SEC`,
+  `SNAP_RETENTION_DAYS`); afterwards the file is the source of truth.
+- Telegram secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) do **not**
+  go through settings: they live in `docker/telegram.env` (git-ignored,
+  wired via `env_file`), read from the environment at event time.
+  `POST /dev/alerts/test` sends a test photo reusing the notifier path.
+
+## 9. Camera reset procedure (beep-loop)
+
+On (re)boot this firmware may sit in a beep-loop instead of joining:
+press the **physical reset button once** — it then associates normally.
+Observed with and without SD present; a spontaneous reboot into this state
+happened once (2026-09-11, cause unknown — worker idle at the time, so not
+our traffic; no undervoltage). While beeping, check
+`nc -vz 192.168.169.1 6123` before pressing reset: closed port confirms
+the loop versus a network issue.
