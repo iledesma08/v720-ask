@@ -356,7 +356,7 @@ def _prune_snapshots(days: float) -> int:
     return removed
 
 
-<def _sweep_part_files(snap_dir=None) -> int:
+def _sweep_part_files(snap_dir=None) -> int:
     """Delete orphan `.part-*` mux temp files. Returns count removed."""
     target = snap_dir or SNAP_DIR
     removed = 0
