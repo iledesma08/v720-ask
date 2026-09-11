@@ -51,6 +51,10 @@ DEFAULT_SETTINGS = {
     "capture_trigger": "both",
     "clip_sec": 10.0,
     "clip_cooldown_sec": 30.0,
+    "telegram_enabled": False,
+    "alert_start_hour": 0,
+    "alert_end_hour": 5,
+    "alert_cooldown_sec": 300.0,
 }
 
 
@@ -95,6 +99,19 @@ def _load_settings():
     except (TypeError, ValueError):
         cd = out["clip_cooldown_sec"]
     out["clip_cooldown_sec"] = min(max(cd, 5.0), 300.0)
+    tg = data.get("telegram_enabled", out["telegram_enabled"])
+    out["telegram_enabled"] = bool(tg) if isinstance(tg, (bool, int)) else False
+    for key in ("alert_start_hour", "alert_end_hour"):
+        try:
+            hh = int(data.get(key, out[key]))
+        except (TypeError, ValueError):
+            hh = out[key]
+        out[key] = min(max(hh, 0), 23)
+    try:
+        ac = float(data.get("alert_cooldown_sec", out["alert_cooldown_sec"]))
+    except (TypeError, ValueError):
+        ac = out["alert_cooldown_sec"]
+    out["alert_cooldown_sec"] = min(max(ac, 30.0), 3600.0)
     return out
 
 
@@ -155,6 +172,31 @@ def _validate_settings(data):
         if not 5.0 <= cd <= 300.0:
             return None, "clip_cooldown_sec must be 5..300"
         cleaned["clip_cooldown_sec"] = cd
+    if "telegram_enabled" in data:
+        en = data["telegram_enabled"]
+        if isinstance(en, bool):
+            cleaned["telegram_enabled"] = en
+        elif en in (0, 1):
+            cleaned["telegram_enabled"] = bool(en)
+        else:
+            return None, "telegram_enabled must be true/false"
+    for key in ("alert_start_hour", "alert_end_hour"):
+        if key in data:
+            try:
+                hh = int(data[key])
+            except (TypeError, ValueError):
+                return None, f"{key} must be an integer"
+            if not 0 <= hh <= 23:
+                return None, f"{key} must be 0..23"
+            cleaned[key] = hh
+    if "alert_cooldown_sec" in data:
+        try:
+            ac = float(data["alert_cooldown_sec"])
+        except (TypeError, ValueError):
+            return None, "alert_cooldown_sec must be a number"
+        if not 30.0 <= ac <= 3600.0:
+            return None, "alert_cooldown_sec must be 30..3600"
+        cleaned["alert_cooldown_sec"] = ac
     return cleaned, None
 
 
@@ -576,6 +618,7 @@ def _facewatch_worker():
                 th.start()
                 print(f"facewatch: clip started ({tag}, "
                       f"{cfg['clip_sec']}s)", flush=True)
+                _maybe_alert(img, motion, faces)
                 continue
             if moved and want_motion:
                 # Burst on motion-hit: grab fast follow-ups, keep the best
@@ -633,6 +676,7 @@ def _facewatch_worker():
                 print(f"facewatch: burst saved {name} "
                       f"(frames={len(cand_imgs)} best={best} "
                       f"motion={bmotion:.1f} faces={bfaces})", flush=True)
+                _maybe_alert(cand_imgs[best], bmotion, bfaces)
                 continue
             try:
                 name = _save_snapshot(img, src="auto")
@@ -649,6 +693,7 @@ def _facewatch_worker():
                 pass
             print(f"facewatch: saved {name} "
                   f"(motion={motion:.1f} faces={faces})", flush=True)
+            _maybe_alert(img, motion, faces)
         except Exception as exc:  # noqa: BLE001 - never let the thread die
             print(f"facewatch: loop error: {type(exc).__name__}: {exc}",
                   flush=True)
@@ -772,6 +817,146 @@ def _auto_clip(seconds: float, tag: str):
         print("facewatch: auto-clip got no frames", flush=True)
         return
     print(f"facewatch: auto-clip saved {name}", flush=True)
+
+
+def _cordoba_now():
+    """Current wall time in America/Argentina/Cordoba.
+
+    Falls back to fixed UTC-3 (Cordoba has no DST) when the tz database
+    is unavailable, e.g. slim containers without tzdata.
+    """
+    import datetime as _dt
+
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Argentina/Cordoba")
+    except Exception:  # noqa: BLE001
+        tz = _dt.timezone(_dt.timedelta(hours=-3), "ART")
+    return _dt.datetime.now(tz)
+
+
+def _hour_in_window(hour, start, end):
+    """Pure schedule predicate; overnight wrap supported.
+
+    Start inclusive, end exclusive; start == end means always on.
+    """
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def _cooldown_ok(now_mono, last_sent_mono, cooldown_sec):
+    """Pure cooldown gate; first event (no prior send) always passes."""
+    if last_sent_mono is None:
+        return True
+    return (now_mono - last_sent_mono) >= cooldown_sec
+
+
+def _alert_decision(enabled, hour, start, end, now_mono, last_sent_mono,
+                    cooldown_sec):
+    """Pure notifier decision: (send: bool, reason: str)."""
+    if not enabled:
+        return False, "disabled"
+    if not _hour_in_window(hour, start, end):
+        return False, "out-of-window"
+    if not _cooldown_ok(now_mono, last_sent_mono, cooldown_sec):
+        return False, "cooldown"
+    return True, "send"
+
+
+def _telegram_send(token, chat_id, jpeg_bytes, caption, timeout=20.0):
+    """Send one photo via Bot API sendPhoto. Returns (ok, error)."""
+    import json as _json
+    import urllib.request as _req
+
+    boundary = "v720alertboundary"
+    head = (f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="chat_id"\r\n\r\n'
+            f"{chat_id}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="caption"\r\n\r\n'
+            f"{caption}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="photo"; '
+            f'filename="alert.jpg"\r\n'
+            f"Content-Type: image/jpeg\r\n\r\n").encode()
+    tail = f"\r\n--{boundary}--\r\n".encode()
+    req = _req.Request(
+        f"https://api.telegram.org/bot{token}/sendPhoto",
+        data=head + bytes(jpeg_bytes) + tail,
+        headers={"Content-Type":
+                 f"multipart/form-data; boundary={boundary}"},
+        method="POST")
+    try:
+        with _req.urlopen(req, timeout=timeout) as resp:
+            body = _json.loads(resp.read().decode())
+    except Exception as exc:  # noqa: BLE001 - network errors vary
+        return False, f"{type(exc).__name__}: {exc}"
+    if body.get("ok"):
+        return True, ""
+    return False, str(body.get("description") or body)
+
+
+def _deliver_alert(token, chat_id, jpeg_bytes, caption, sender=None,
+                   delays=(2.0, 5.0)):
+    """Up to 3 attempts with backoff, then drop. Returns True if sent."""
+    send = sender or _telegram_send
+    err = ""
+    for attempt in range(1 + len(delays)):
+        ok, err = send(token, chat_id, jpeg_bytes, caption)
+        if ok:
+            return True
+        if attempt < len(delays):
+            import time as _time
+
+            _time.sleep(delays[attempt])
+    print(f"telegram: dropped after retries ({err})", flush=True)
+    return False
+
+
+_alert_state = {"last_sent": None}
+_alert_lock = threading.Lock()
+
+
+def _maybe_alert(jpeg_bytes, motion, faces):
+    """Hook called from the facewatch worker on trigger events.
+
+    Gates schedule/cooldown synchronously (cheap), delivers in a
+    background thread so the worker loop never stalls on HTTPS.
+    Secrets come from the environment at event time, never from git.
+    """
+    import time as _time
+
+    cfg = _load_settings()
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not cfg["telegram_enabled"]:
+        return
+    if not token or not chat_id:
+        print("telegram: missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID",
+              flush=True)
+        return
+    now_mono = _time.monotonic()
+    now_local = _cordoba_now()
+    with _alert_lock:
+        send, reason = _alert_decision(
+            True, now_local.hour, cfg["alert_start_hour"],
+            cfg["alert_end_hour"], now_mono, _alert_state["last_sent"],
+            cfg["alert_cooldown_sec"])
+        if send:
+            _alert_state["last_sent"] = now_mono
+    if not send:
+        print(f"telegram: skip ({reason})", flush=True)
+        return
+    caption = (f"Movimiento {now_local.strftime('%H:%M')} "
+               f"(motion {motion:.1f}, caras {faces})")
+    th = threading.Thread(target=_deliver_alert,
+                          args=(token, chat_id, bytes(jpeg_bytes), caption),
+                          daemon=True)
+    th.start()
+    print(f"telegram: sending ({caption})", flush=True)
 
 
 def _mux_ffmpeg(dec, tmp, w, h, fps, audio=None) -> bool:
@@ -1287,6 +1472,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/dev/sd/download":
             self._sd_download(query)
             return
+        if route == "/dev/alerts/test":
+            self._alert_test()
+            return
         if route != f"/dev/{UID}/clip":
             self._send(404, "text/plain", 9,
                        [("Connection", "close")])
@@ -1335,6 +1523,68 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, "application/json", len(body),
                    [("Connection", "close")])
         self.wfile.write(body)
+
+    def _alert_test(self) -> None:
+        """Send a test alert reusing the notifier send path.
+
+        Uses the newest auto snapshot (or a live grab when idle).
+        Reports the schedule/cooldown decision without changing settings
+        or the cooldown state. Never echoes secrets.
+        """
+        import glob as _glob
+        import time as _time
+
+        def reply(code, obj):
+            body = json.dumps(obj).encode()
+            self._send(code, "application/json", len(body),
+                       [("Connection", "close")])
+            self.wfile.write(body)
+
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            reply(500, {"sent": False,
+                        "error": "missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"})
+            return
+        cands = sorted(_glob.glob(os.path.join(SNAP_DIR, "*-auto*.jpg")),
+                       key=os.path.getmtime, reverse=True)
+        jpeg = None
+        if cands:
+            try:
+                with open(cands[0], "rb") as fh:
+                    jpeg = fh.read()
+            except OSError:
+                jpeg = None
+        if jpeg is None:
+            # The worker usually holds the lock (2s grabs); wait for a
+            # gap like the manual clip endpoint does.
+            for _ in range(20):
+                try:
+                    jpeg = _grab_frame()
+                except Exception:  # noqa: BLE001
+                    jpeg = None
+                if jpeg is not None:
+                    break
+                _time.sleep(0.5)
+            if jpeg is None:
+                reply(503, {"sent": False,
+                            "error": "no snapshot and camera busy"})
+                return
+        cfg = _load_settings()
+        now_local = _cordoba_now()
+        with _alert_lock:
+            _, reason = _alert_decision(
+                cfg["telegram_enabled"], now_local.hour,
+                cfg["alert_start_hour"], cfg["alert_end_hour"],
+                _time.monotonic(), _alert_state["last_sent"],
+                cfg["alert_cooldown_sec"])
+        caption = f"Prueba {now_local.strftime('%H:%M')} (bot ok)"
+        ok, err = _telegram_send(token, chat_id, jpeg, caption)
+        if not ok:
+            reply(502, {"sent": False, "error": err,
+                        "decision": reason})
+            return
+        reply(200, {"sent": True, "decision": reason})
 
     def _sd_download(self, query) -> None:
         """Download one SD minute-file to the Pi (pauses camera recording
