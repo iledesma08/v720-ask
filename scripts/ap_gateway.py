@@ -275,6 +275,17 @@ LATEST_MAX_AGE = 3.0
 # G.711 audio chunks (stripped) published by the reader for clip muxing.
 _audio_lock = threading.Lock()
 _audio_chunks: list = []
+# ~32s of 8kHz mono: plenty for any clip mux, bounds hours-long viewing.
+_audio_cap = 256 * 1024
+
+
+def _push_audio(data: bytes) -> None:
+    """Append a live audio packet, dropping oldest beyond the cap."""
+    with _audio_lock:
+        _audio_chunks.append(data)
+        total = sum(len(c) for c in _audio_chunks)
+        while total > _audio_cap and len(_audio_chunks) > 1:
+            total -= len(_audio_chunks.pop(0))
 
 
 def _sd_call(fn):
@@ -1267,13 +1278,11 @@ def _iter_jpegs(sock, stop, confirm_interval=0.1):
                 pending.append(p._pkg_id)
             if p.cmd == cmd_udp.P2P_UDP_CMD_G711 and \
                     p.msg_flag == cmd_udp.PROTOCOL_MSG_FLAG_FINISH:
-                with _audio_lock:
-                    _audio_chunks.append(bytes(p.payload[:-5]))
+                _push_audio(bytes(p.payload[:-5]))
                 continue
             if p.cmd == cmd_udp.P2P_UDP_CMD_PCM:
                 # This camera pushes audio as raw PCM frames, not G711.
-                with _audio_lock:
-                    _audio_chunks.append(bytes(p.payload))
+                _push_audio(bytes(p.payload))
                 continue
             if p.cmd != cmd_udp.P2P_UDP_CMD_JPEG:
                 continue
