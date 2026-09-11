@@ -2126,7 +2126,7 @@ def main() -> int:
     th = threading.Thread(target=_facewatch_worker, daemon=True)
     th.start()
     print(f"facewatch worker started (governed by {SETTINGS_PATH})")
-<    swept = _sweep_part_files()
+    swept = _sweep_part_files()
     if swept:
         print(f"startup: removed {swept} orphan .part files", flush=True)
     th = threading.Thread(target=_retention_worker, daemon=True)
