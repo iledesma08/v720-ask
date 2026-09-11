@@ -331,6 +331,25 @@ def _prune_snapshots(days: float) -> int:
     return removed
 
 
+def _sweep_part_files(snap_dir=None) -> int:
+    """Delete orphan `.part-*` mux temp files. Returns count removed."""
+    target = snap_dir or SNAP_DIR
+    removed = 0
+    try:
+        names = os.listdir(target)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.startswith(".part-"):
+            continue
+        try:
+            os.unlink(os.path.join(target, name))
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def _retention_worker(days: float) -> None:
     import time as _time
 
@@ -2051,6 +2070,9 @@ def main() -> int:
     th = threading.Thread(target=_facewatch_worker, daemon=True)
     th.start()
     print(f"facewatch worker started (governed by {SETTINGS_PATH})")
+    swept = _sweep_part_files()
+    if swept:
+        print(f"startup: removed {swept} orphan .part files", flush=True)
     if args.retain_days > 0:
         n = _prune_snapshots(args.retain_days)
         print(f"retention: removed {n} files older than {args.retain_days}d")
