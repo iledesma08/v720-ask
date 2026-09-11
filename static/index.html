@@ -171,6 +171,25 @@ input[type=number] { width: 90px; }
         <select id="cfg-night"><option value="off">Off</option><option value="on">On</option></select>
       </div>
     </div>
+    <div class="card">
+      <h3>Telegram alerts</h3>
+      <div class="row">
+        <label>Motion alerts<span class="hint">Photo to Telegram</span></label>
+        <label class="switch"><input type="checkbox" id="cfg-tg"><span class="slider"></span></label>
+      </div>
+      <div class="row">
+        <label>Alert window<span class="hint">Start – end (Córdoba)</span></label>
+        <span><input type="number" id="cfg-tg-start" min="0" max="23" step="1">–<input type="number" id="cfg-tg-end" min="0" max="23" step="1"></span>
+      </div>
+      <div class="row">
+        <label>Alert cooldown<span class="hint">Min gap between alerts</span></label>
+        <span><input type="number" id="cfg-tg-cd" min="30" max="3600" step="1"> s</span>
+      </div>
+      <div class="row">
+        <label>Test<span class="hint" id="cfg-tg-msg">Sends a test photo</span></label>
+        <button type="button" id="cfg-tg-test">Send test</button>
+      </div>
+    </div>
     <button class="save" id="cfg-save">Save settings</button>
   </div>
   <div class="pad" id="pad" aria-label="PTZ controls">
@@ -501,6 +520,21 @@ function syncClipRows() {
 }
 document.getElementById('cfg-enabled').onchange = syncAutoRows;
 document.getElementById('cfg-mode').onchange = syncClipRows;
+document.getElementById('cfg-tg-test').onclick = function () {
+  var msg = document.getElementById('cfg-tg-msg');
+  msg.textContent = 'Sending…';
+  // Free the camera first: live holds the lock in this same view,
+  // and the test falls back to a live grab when no snapshot exists.
+  liveEl.removeAttribute('src');
+  liveEl.hidden = true;
+  function back() { liveEl.hidden = false; watchLive(); }
+  fetch('dev/alerts/test', { method: 'POST', cache: 'no-store' })
+    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+    .then(function (t) {
+      back();
+      msg.textContent = t.j.sent ? 'Sent ✓ (' + t.j.decision + ')' : ('Failed: ' + (t.j.error || t.j.decision || t.ok));
+    }, function (e) { back(); msg.textContent = 'Failed: ' + String((e && e.message) || e); });
+};
 function loadSettings() {
   getJSON('dev/settings', 8000).then(
     function (s) {
@@ -515,6 +549,10 @@ function loadSettings() {
       document.getElementById('cfg-trigger').value = s.capture_trigger || 'both';
       document.getElementById('cfg-clipsec').value = s.clip_sec;
       document.getElementById('cfg-cooldown').value = s.clip_cooldown_sec;
+      document.getElementById('cfg-tg').checked = !!s.telegram_enabled;
+      document.getElementById('cfg-tg-start').value = s.alert_start_hour;
+      document.getElementById('cfg-tg-end').value = s.alert_end_hour;
+      document.getElementById('cfg-tg-cd').value = s.alert_cooldown_sec;
       syncAutoRows();
       document.getElementById('cfg-interval').value = s.facewatch_interval_sec;
       document.getElementById('cfg-thresh').value = s.motion_thresh;
@@ -529,6 +567,10 @@ document.getElementById('cfg-save').onclick = function () {
     capture_trigger: document.getElementById('cfg-trigger').value,
     clip_sec: parseFloat(document.getElementById('cfg-clipsec').value),
     clip_cooldown_sec: parseFloat(document.getElementById('cfg-cooldown').value),
+    telegram_enabled: document.getElementById('cfg-tg').checked,
+    alert_start_hour: parseInt(document.getElementById('cfg-tg-start').value, 10),
+    alert_end_hour: parseInt(document.getElementById('cfg-tg-end').value, 10),
+    alert_cooldown_sec: parseFloat(document.getElementById('cfg-tg-cd').value),
     facewatch_interval_sec: parseFloat(document.getElementById('cfg-interval').value),
     motion_thresh: parseFloat(document.getElementById('cfg-thresh').value),
     night_ir_mode: document.getElementById('cfg-night').value
