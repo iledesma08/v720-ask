@@ -3,7 +3,7 @@
 # Both services share host networking (like adguardhome / nginx-proxy-manager
 # in infra): the gateway must reach 192.168.169.1 through the host's wlan0,
 # and npm + AdGuard already own 80/443/53 on the host.
-# camara.lan (AdGuard rewrite -> Pi) fronts both via npm:
+# <cam-domain> (AdGuard rewrite -> Pi) fronts both via npm:
 #   /        -> :8000 (static page)
 #   /dev/*   -> :8090 (gateway, custom location)
 # Full frontal recipe: docs/npm-cam-route.md.

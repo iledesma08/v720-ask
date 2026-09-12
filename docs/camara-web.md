@@ -5,6 +5,9 @@ Goal: view the camera in the browser via the `:8090` gateway + this page
 capture and Telegram alerts. Primary deployment is Docker
 (`docker-compose.yml`); the manual venv run below is for debugging.
 
+Conventions: `<cam-domain>` (e.g. `camara.lan`), `<pi-lan-ip>` (the Pi's
+LAN address).
+
 ## 1. Requirements
 
 - Pi with free `wlan0` and camera in AP mode (`Nax_*`).
@@ -34,9 +37,9 @@ curl -s http://127.0.0.1:8090/dev/list   # → [{"uid":"ap-camera",...}]
 
 ## 4. NPM + AdGuard front end (same recipe validated in `docs/npm-cam-route.md`)
 
-1. AdGuard > DNS rewrites: `camara.lan` → `192.168.0.204`
+1. AdGuard > DNS rewrites: `<cam-domain>` → `<pi-lan-ip>`
    (the PC must use AdGuard as DNS; otherwise a hosts entry)
-2. NPM Proxy Host `camara.lan` → `192.168.0.204:8090` with Access List
+2. NPM Proxy Host `<cam-domain>` → `<pi-lan-ip>:8090` with Access List
    (auth). No custom locations: `/` (page) and `/dev/*` (API) both
    come from the gateway.
 
@@ -47,11 +50,11 @@ same origin, which is exactly what this recipe sets up.
 ## 5. Test
 
 ```bash
-curl -s http://camara.lan/dev/list
-curl -o s.jpg http://camara.lan/dev/ap-camera/snapshot && file s.jpg  # → JPEG
+curl -s http://<cam-domain>/dev/list
+curl -o s.jpg http://<cam-domain>/dev/ap-camera/snapshot && file s.jpg  # → JPEG
 ```
 
-In the browser (PC on LAN): open `http://camara.lan/` → you see the camera(s)
+In the browser (PC on LAN): open `http://<cam-domain>/` → you see the camera(s)
 with a live MJPEG `<img>` + *Watch live* and *Snapshot* links.
 
 ## 6. Ports in use on this Pi (do not step on)
@@ -60,11 +63,8 @@ with a live MJPEG `<img>` + *Watch live* and *Snapshot* links.
 |-----------|-----------------------|
 | 80/443    | nginx-proxy-manager   |
 | 53        | AdGuard               |
-| 8080      | bentopdf              |
-| 8081      | metube                |
-| 8082      | it-tools              |
-| 8083      | stirling              |
 | **8090**  | **camera gateway**    |
+| others    | your own services (`ss -tlnp` to check) |
 
 ## 7. Notes
 
