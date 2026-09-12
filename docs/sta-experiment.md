@@ -31,7 +31,7 @@ echo $!  # keep the PID to stop it later
 ## 2. Stop the gateway (single-session camera)
 
 ```bash
-cd /mnt/data/docker/opencode/projects/v720-ask
+cd <repo>
 sudo docker compose -f docker-compose.yml stop
 ```
 
@@ -74,8 +74,8 @@ Verdict rule: lease + cloud POST captured = STA viable. Anything less
 ## Results 2026-09-11 (experiment ran, rolled back to AP)
 
 - **JOIN (204) accepted**: AP `Nax_*` dropped; DHCP lease for the camera
-  on 2.4G (hostname `rtthread`, MAC matched — observed 2026-09-11 as
-  `192.168.0.22`). Join path works on this FW.
+  on 2.4G (hostname `rtthread`, MAC matched — e.g. `192.168.0.22` on
+  2026-09-11). Join path works on this FW.
 - **DNS hijack works**: camera queried `v720.p2p.naxclow.com` +
   `v720.naxclow.com`, AdGuard rewrote both (Query Log proof).
 - **Cloud contact**: `POST /app/api/ApiSysDevices/getDevInfo`
