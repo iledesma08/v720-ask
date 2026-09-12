@@ -7,9 +7,9 @@ It appears nowhere else (no logs print it, no files).
 Usage (from repo root, Pi with wlan0 -> Nax_*, GATEWAY STOPPED — single
 session camera):
     STA_WIFI_PASS='...' PYTHONPATH=src /tmp/v720fp/bin/python \
-        scripts/sta_join.py --ssid 'TP-Link-ASK-2.4' --dry-run
+        scripts/sta_join.py --ssid '<home-ssid-2.4>' --dry-run
     STA_WIFI_PASS='...' PYTHONPATH=src /tmp/v720fp/bin/python \
-        scripts/sta_join.py --ssid 'TP-Link-ASK-2.4'
+        scripts/sta_join.py --ssid '<home-ssid-2.4>'
 
 After a successful join the camera leaves the AP: THIS session drops.
 That is expected, not a failure. Continue with docs/sta-experiment.md

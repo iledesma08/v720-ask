@@ -7,7 +7,8 @@ experiment with physical-reset rollback.
 ## 0. Preconditions (do not skip)
 
 - [ ] Daytime window (night alerts must work tonight).
-- [ ] TP-Link 2.4GHz SSID + password at hand. The password is typed live,
+- [ ] Home 2.4GHz SSID + password at hand (the camera is 2.4GHz-only).
+  The password is typed live,
       never stored (not in repo, issues, logs, or shell history files —
       prefer the env form below over `--password`).
 - [ ] Reset procedure fresh in mind (`docs/camara-web.md` §9): one press,
@@ -38,9 +39,9 @@ sudo docker compose -f docker-compose.yml stop
 
 ```bash
 STA_WIFI_PASS='...' PYTHONPATH=src /tmp/v720fp/bin/python \
-  scripts/sta_join.py --ssid 'TP-Link-ASK-2.4' --dry-run
+  scripts/sta_join.py --ssid '<home-ssid-2.4>' --dry-run
 STA_WIFI_PASS='...' PYTHONPATH=src /tmp/v720fp/bin/python \
-  scripts/sta_join.py --ssid 'TP-Link-ASK-2.4'
+  scripts/sta_join.py --ssid '<home-ssid-2.4>'
 ```
 
 Expected: `JOIN-SEND: answered {...}` (or TIMEOUT — the AP drops either
@@ -49,7 +50,7 @@ way by design). From here the camera is gone from `192.168.169.1`.
 ## 4. Verify (still without gateway)
 
 ```bash
-# a) DHCP lease on the Archer for the camera (new device/hostname)
+# a) DHCP lease on the router for the camera (new device/hostname)
 # b) In the pcap: POST getA9ConfCheck (or getDevInfo first on newer FW),
 #    MQTT connect to the Pi broker
 # c) ping the leased IP
@@ -72,8 +73,9 @@ Verdict rule: lease + cloud POST captured = STA viable. Anything less
 
 ## Results 2026-09-11 (experiment ran, rolled back to AP)
 
-- **JOIN (204) accepted**: AP `Nax_*` dropped; DHCP lease `rtthread`
-  `192.168.0.22` on 2.4G (MAC matches camera). Join path works on this FW.
+- **JOIN (204) accepted**: AP `Nax_*` dropped; DHCP lease for the camera
+  on 2.4G (hostname `rtthread`, MAC matched — observed 2026-09-11 as
+  `192.168.0.22`). Join path works on this FW.
 - **DNS hijack works**: camera queried `v720.p2p.naxclow.com` +
   `v720.naxclow.com`, AdGuard rewrote both (Query Log proof).
 - **Cloud contact**: `POST /app/api/ApiSysDevices/getDevInfo`
@@ -94,10 +96,10 @@ Verdict rule: lease + cloud POST captured = STA viable. Anything less
   AdGuard rewrite left in place for the next attempt.
 - **Pin to AP (post-experiment learning)**: reset restores the AP but the
   STA credentials persist in flash and the camera re-roams on its own.
-  Deny-list the camera MAC (`5C:F0:20:05:09:2C`) in the Archer
-  (Clients → rtthread → Deny) — reversible from the same UI. Do NOT
+  Deny-list the camera MAC in the router (Clients → camera → Deny,
+  e.g. Archer AX23 UI) — reversible from the same UI. Do NOT
   overwrite STA config with junk SSIDs over 204 (unpredictable on
-  this FW).
+  this FW). (Observed MAC 2026-09-11: `5C:F0:20:05:09:2C`.)
 
 ## Failure modes seen before
 
