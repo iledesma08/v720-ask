@@ -22,7 +22,7 @@ snapshots over `192.168.169.1:6123`.
 - **Robustness**: single viewer at a time (every session closes video on
   release), auto-reconnect with backoff, drain-resync against wedged control,
   retransmission confirms every ~100 ms, orphan temp-file sweep on boot
-- systemd unit + Nginx Proxy Manager route with auth (`http://camara.lan/`)
+- systemd unit + Nginx Proxy Manager route with auth (e.g. `http://camara.lan/`)
 - No cloud, no app, no DNS hijack needed in AP-direct mode
 
 ## Deploy (Docker, recommended)
