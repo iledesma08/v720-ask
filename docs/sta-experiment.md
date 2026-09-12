@@ -92,6 +92,12 @@ Verdict rule: lease + cloud POST captured = STA viable. Anything less
   grows (first pcap never ran).
 - **Rollback**: physical reset → AP back → gateway up, verified.
   AdGuard rewrite left in place for the next attempt.
+- **Pin to AP (post-experiment learning)**: reset restores the AP but the
+  STA credentials persist in flash and the camera re-roams on its own.
+  Deny-list the camera MAC (`5C:F0:20:05:09:2C`) in the Archer
+  (Clients → rtthread → Deny) — reversible from the same UI. Do NOT
+  overwrite STA config with junk SSIDs over 204 (unpredictable on
+  this FW).
 
 ## Failure modes seen before
 
